@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Generated: npm run build, npm run shots
+build/
+shots/
+
+# Logs
+npm-debug.log*
+*.log
+
+# Local notes and settings
+CLAUDE.md
+Task.md
+.claude/settings.local.json
+.env
+.env.*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
