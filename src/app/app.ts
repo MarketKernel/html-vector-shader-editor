@@ -6,8 +6,8 @@ import { containerMatrix, createDocument, findLayer, locate } from '../core/docu
 import { History } from '../core/history';
 import { identity, invert } from '../core/matrix';
 import type { Op } from '../core/ops';
-import type { Style } from '../core/shapes';
-import { DEFAULT_STYLE } from '../core/shapes';
+import type { Style, TextStyle } from '../core/shapes';
+import { DEFAULT_STYLE, DEFAULT_TEXT } from '../core/shapes';
 import type { Document, Layer, Matrix, Node } from '../core/types';
 import type { Tool } from './tools/tool';
 import type { View } from './view';
@@ -33,6 +33,8 @@ class App {
   context: string | null = null;
   activeLayer: string = this.doc.layers[0]!.id;
   style: Style = structuredClone(DEFAULT_STYLE);
+  // How new texts are set.
+  textStyle: TextStyle = { ...DEFAULT_TEXT };
   clipboard: Node[] = [];
   tools: Tool[] = [];
   tool!: Tool;
@@ -168,6 +170,11 @@ class App {
 
   setStyle(style: Style): void {
     this.style = style;
+    this.emit('style');
+  }
+
+  setTextStyle(style: TextStyle): void {
+    this.textStyle = style;
     this.emit('style');
   }
 }

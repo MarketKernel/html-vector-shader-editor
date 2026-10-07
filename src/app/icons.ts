@@ -7,6 +7,7 @@ const ICONS: Record<string, string> = {
   ellipse: `<ellipse cx="12" cy="12" rx="9" ry="6.5"/>`,
   line: `<path d="M5 19 19 5"/><circle cx="5" cy="19" r="1.6"/><circle cx="19" cy="5" r="1.6"/>`,
   pen: `<path d="M12 19l7-7 3 3-7 7z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18z"/><path d="M2 2l7.6 7.6"/><circle cx="11" cy="11" r="2"/>`,
+  text: `<path d="M5 6V4.5h14V6M12 4.5v15M9 19.5h6"/>`,
   zoom: `<circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.9-4.9"/>`,
   'zoom-in': `<circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.9-4.9M10.5 7.5v6M7.5 10.5h6"/>`,
   'zoom-out': `<circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.9-4.9M7.5 10.5h6"/>`,

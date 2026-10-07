@@ -1,21 +1,28 @@
-// Export → SVG, PNG, GLSL and Shadertoy: the exporters' text or pixels, their warnings, a
-// preview, Copy and Save. The PNG is drawn by a renderer of its own on an offscreen canvas
-// at the document's size (times 1, 2 or 4), whatever the view's zoom. The shader dialogs
-// compile the very text they show and draw it beside the editor's picture.
+// Export → SVG, PNG, GLSL, Shadertoy and WGSL: the exporters' text or pixels, their
+// warnings, a preview, Copy and Save. The PNG is drawn by a renderer of its own — of the
+// kind the view uses — offscreen at the document's size (times 1, 2 or 4), whatever the
+// view's zoom. The shader dialogs compile the very text they show and draw it beside the
+// editor's picture.
 
 import { drawList } from '../core/draw';
-import { exportGlsl, exportShadertoy, GLSL_TOLERANCE, shadertoyLog, shadertoyStandalone } from '../core/glsl';
+import { exportGlsl, exportShadertoy, shadertoyLog, shadertoyStandalone } from '../core/glsl';
+import { SHADER_TOLERANCE } from '../core/shader';
 import { exportSvg } from '../core/svg';
 import type { Document } from '../core/types';
 import { app } from './app';
 import { download } from './io';
+import { exportWgsl } from '../core/wgsl';
 import { drawFragment } from './render/fragment';
+import { gpuDevice, runWgsl } from './render/gpu';
+import type { Backend } from './render/renderer';
 import { Renderer } from './render/renderer';
+import { WebGpuRenderer } from './render/webgpu';
 import { esc, panel, toast } from './ui/dialog';
 
 let offscreen: Renderer | null = null;
+let offscreenGpu: WebGpuRenderer | null = null;
 
-function exportRenderer(): Renderer {
+function glRenderer(): Renderer {
   if (offscreen && !offscreen.gl.isContextLost()) return offscreen;
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 1;
@@ -25,13 +32,22 @@ function exportRenderer(): Renderer {
   return offscreen;
 }
 
-// The document's pixels at `scale`, drawn as the GLSL export would draw them at that size.
-export function renderPixels(doc: Document, scale = 1): ImageData {
-  return exportRenderer().readDocument(drawList(doc, { tolerance: GLSL_TOLERANCE, scale }), scale);
+async function gpuRenderer(): Promise<WebGpuRenderer> {
+  const device = await gpuDevice();
+  if (!device) throw new Error('WebGPU недоступен: PNG не нарисовать');
+  if (offscreenGpu?.device !== device) offscreenGpu = new WebGpuRenderer(device, null);
+  return offscreenGpu;
 }
 
-export function pngBlob(doc: Document, scale = 1): Promise<Blob> {
-  const pixels = renderPixels(doc, scale);
+// The document's pixels at `scale`, drawn as the shader exports would draw them at that
+// size; by the renderer the view uses, unless told which.
+export async function renderPixels(doc: Document, scale = 1, backend: Backend = app.view?.renderer?.kind ?? 'webgl2'): Promise<ImageData> {
+  const list = drawList(doc, { tolerance: SHADER_TOLERANCE, scale });
+  return backend === 'webgpu' ? (await gpuRenderer()).readDocument(list, scale) : glRenderer().readDocument(list, scale);
+}
+
+export async function pngBlob(doc: Document, scale = 1): Promise<Blob> {
+  const pixels = await renderPixels(doc, scale);
   const canvas = document.createElement('canvas');
   canvas.width = pixels.width;
   canvas.height = pixels.height;
@@ -116,35 +132,54 @@ export function exportPngDialog(): void {
 
 export const exportGlslDialog = (): void => shaderDialog('glsl');
 export const exportShadertoyDialog = (): void => shaderDialog('shadertoy');
+export const exportWgslDialog = (): void => shaderDialog('wgsl');
 
-// GLSL and Shadertoy: the code (editable), and beside the editor's picture the shader
-// compiled from that very text — a Shadertoy one wrapped as Shadertoy would run it.
-function shaderDialog(kind: 'glsl' | 'shadertoy'): void {
+const SHADERS = {
+  glsl: { title: 'Экспорт GLSL', export: exportGlsl, live: 'Шейдер', file: '.frag' },
+  shadertoy: { title: 'Экспорт для Shadertoy', export: exportShadertoy, live: 'Shadertoy-шейдер', file: '.shadertoy.glsl' },
+  wgsl: { title: 'Экспорт WGSL', export: exportWgsl, live: 'WGSL-модуль', file: '.wgsl' },
+};
+
+// GLSL, Shadertoy and WGSL: the code (editable), and beside the editor's picture the
+// shader compiled from that very text — a Shadertoy one wrapped as Shadertoy would run it,
+// a WGSL one run with WebGPU.
+function shaderDialog(kind: keyof typeof SHADERS): void {
   const toy = kind === 'shadertoy';
-  const { text, warnings } = toy ? exportShadertoy(app.doc, app.fileName) : exportGlsl(app.doc, app.fileName);
-  const p = panel(toy ? 'Экспорт для Shadertoy' : 'Экспорт GLSL', 'dialog--wide dialog--export dialog--glsl');
+  const def = SHADERS[kind];
+  const { text, warnings } = def.export(app.doc, app.fileName);
+  const p = panel(def.title, 'dialog--wide dialog--export dialog--glsl');
   const w = app.doc.width;
   const h = app.doc.height;
   const how = toy
     ? 'Вставьте текст вместо кода вкладки Image нового шейдера на shadertoy.com. Страница вписывается в окно с сохранением пропорций; при iResolution = размеру документа пиксели совпадают с PNG.'
-    : `uResolution = (${w}, ${h}) даёт пиксели PNG-экспорта.`;
-  p.body.innerHTML = `<div class="export-grid"><textarea class="export-code" spellcheck="false" aria-label="Шейдер">${esc(text)}</textarea><div class="export-previews"><figure class="export-preview"><canvas class="glsl-editor" width="${w}" height="${h}"></canvas><figcaption>Редактор (PNG-экспорт)</figcaption></figure><figure class="export-preview"><canvas class="glsl-live" width="${w}" height="${h}"></canvas><figcaption>${toy ? 'Shadertoy-шейдер' : 'Шейдер'}, скомпилированный из этого текста</figcaption></figure><pre class="glsl-log" hidden></pre></div></div>${warningsHtml(warnings)}<p class="export-note">${(text.length / 1024).toFixed(1)} КБ · ${esc(how)} Текст можно править — превью пересобирается.</p>`;
+    : kind === 'wgsl'
+      ? `Точки входа vs_main и fs_main, три вершины, размер области (${w}, ${h}) в uniform-буфере @group(0) @binding(0) даёт пиксели PNG-экспорта.`
+      : `uResolution = (${w}, ${h}) даёт пиксели PNG-экспорта.`;
+  p.body.innerHTML = `<div class="export-grid"><textarea class="export-code" spellcheck="false" aria-label="Шейдер">${esc(text)}</textarea><div class="export-previews"><figure class="export-preview"><canvas class="glsl-editor" width="${w}" height="${h}"></canvas><figcaption>Редактор (PNG-экспорт)</figcaption></figure><figure class="export-preview"><canvas class="glsl-live" width="${w}" height="${h}"></canvas><figcaption>${def.live}, скомпилированный из этого текста</figcaption></figure><pre class="glsl-log" hidden></pre></div></div>${warningsHtml(warnings)}<p class="export-note">${(text.length / 1024).toFixed(1)} КБ · ${esc(how)} Текст можно править — превью пересобирается.</p>`;
   const code = p.body.querySelector('textarea')!;
   const editor = p.body.querySelector<HTMLCanvasElement>('.glsl-editor')!;
   const live = p.body.querySelector<HTMLCanvasElement>('.glsl-live')!;
   const log = p.body.querySelector<HTMLElement>('.glsl-log')!;
-  try {
-    editor.getContext('2d')!.putImageData(renderPixels(app.doc, 1), 0, 0);
-  } catch (error) {
-    log.hidden = false;
-    log.textContent = (error as Error).message;
-  }
-  const compileNow = () => {
+  renderPixels(app.doc, 1).then(
+    (pixels) => editor.getContext('2d')!.putImageData(pixels, 0, 0),
+    (error: Error) => {
+      log.hidden = false;
+      log.textContent = error.message;
+    },
+  );
+  let compiles = 0;
+  const compileNow = async () => {
+    const mine = ++compiles;
     try {
-      drawFragment(live, toy ? shadertoyStandalone(code.value) : code.value);
+      if (kind === 'wgsl') {
+        const pixels = await runWgsl(code.value, w, h);
+        if (mine !== compiles) return;
+        live.getContext('2d')!.putImageData(pixels, 0, 0);
+      } else drawFragment(live, toy ? shadertoyStandalone(code.value) : code.value);
       log.hidden = true;
       live.classList.remove('stale');
     } catch (error) {
+      if (mine !== compiles) return;
       log.hidden = false;
       log.textContent = toy ? shadertoyLog((error as Error).message) : (error as Error).message;
       live.classList.add('stale');
@@ -153,12 +188,12 @@ function shaderDialog(kind: 'glsl' | 'shadertoy'): void {
   let timer = 0;
   code.addEventListener('input', () => {
     clearTimeout(timer);
-    timer = window.setTimeout(compileNow, 300);
+    timer = window.setTimeout(() => void compileNow(), 300);
   });
-  compileNow();
+  void compileNow();
   const copy = button('Копировать');
-  const save = button(toy ? 'Сохранить .glsl' : 'Сохранить .frag', true);
+  const save = button(`Сохранить ${def.file.slice(def.file.lastIndexOf('.'))}`, true);
   copy.addEventListener('click', () => void copyText(code.value));
-  save.addEventListener('click', () => download(new Blob([code.value], { type: 'text/plain' }), `${base()}${toy ? '.shadertoy.glsl' : '.frag'}`));
+  save.addEventListener('click', () => download(new Blob([code.value], { type: 'text/plain' }), `${base()}${def.file}`));
   p.foot.prepend(copy, save);
 }

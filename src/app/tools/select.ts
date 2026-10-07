@@ -1,7 +1,8 @@
 // Select: click to pick, Shift+click to add or remove, drag on empty canvas for a marquee.
 // The selection's frame has eight handles that scale it (Shift keeps proportions, Alt
 // scales about the centre); just outside a corner it rotates (Shift: 15° steps). Dragging
-// inside the frame moves it, the arrow keys nudge it. A double click enters a group.
+// inside the frame moves it, the arrow keys nudge it. A double click enters a group, or
+// edits a text (so does Enter).
 //
 // Every drag computes one matrix in document space from where it began and applies it to
 // the nodes as they were then (core/actions.ts transformNodes), merged into one step.
@@ -14,6 +15,7 @@ import type { Matrix, Node } from '../../core/types';
 import { app } from '../app';
 import { frameOf, HANDLES, hitTest, nodesIn, selectionFrame } from '../selection';
 import { accent } from '../view';
+import { editText } from './text';
 import type { Tool } from './tool';
 
 const HANDLE_RADIUS = 6;
@@ -83,7 +85,7 @@ export const selectTool: Tool = {
   label: 'Выделение',
   key: 'V',
   icon: 'select',
-  hint: 'Клик — выбрать, Shift — добавить, протяжка — рамка; ручки масштабируют, за углом — поворот; двойной клик — войти в группу',
+  hint: 'Клик — выбрать, Shift — добавить, протяжка — рамка; ручки масштабируют, за углом — поворот; двойной клик — войти в группу или править текст',
 
   cursor(e) {
     if (!e) return 'default';
@@ -209,7 +211,12 @@ export const selectTool: Tool = {
   dblclick(e) {
     const picked = hitTest(app.doc, e.x, e.y, slop(), app.context);
     const node = picked ? locate(app.doc, picked)?.node : null;
-    if (node?.type === 'group') {
+    if (node?.type === 'text') {
+      editText(node.id);
+      // The caret where the click was.
+      app.tool.down?.(e);
+      app.tool.up?.(e);
+    } else if (node?.type === 'group') {
       app.enter(node.id);
       const inner = hitTest(app.doc, e.x, e.y, slop(), node.id);
       app.select(inner ? [inner] : []);
@@ -224,6 +231,13 @@ export const selectTool: Tool = {
   },
 
   keydown(e) {
+    if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && app.selection.length === 1) {
+      const node = locate(app.doc, app.selection[0]!)?.node;
+      if (node?.type === 'text') {
+        editText(node.id);
+        return true;
+      }
+    }
     const arrows: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
     const dir = arrows[e.key];
     if (!dir || !app.selection.length || e.metaKey || e.ctrlKey || e.altKey) return false;

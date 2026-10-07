@@ -322,6 +322,26 @@ input[type='color'] {
   touch-action: none;
 }
 
+/* Where a text being edited takes its keys: unseen, kept at the caret for input methods. */
+.text-input {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: -1;
+  width: 2px;
+  height: 1.2em;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  opacity: 0;
+  resize: none;
+  overflow: hidden;
+  white-space: pre;
+  font-size: 16px;
+  pointer-events: none;
+}
+
 .view-error {
   position: absolute;
   inset: 24px 24px auto;
@@ -942,7 +962,8 @@ kbd {
     padding: 6px 4px;
   }
 
-  .status-selection {
+  .status-selection,
+  .status-renderer {
     display: none;
   }
 }

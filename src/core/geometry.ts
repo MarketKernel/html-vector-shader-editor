@@ -9,7 +9,8 @@
 
 import type { Box, Point } from './matrix';
 import { boxOfPoints, EMPTY_BOX, inflateBox, isEmptyBox, multiply, transformBox, unionBox } from './matrix';
-import type { Line, LineCap, LineJoin, Matrix, Node, Path, Rect, Segment, Shape } from './types';
+import { cachedLayout } from './text';
+import type { Line, LineCap, LineJoin, Matrix, Node, Path, Rect, Segment, Shape, Text } from './types';
 import { SVG_MITER_LIMIT } from './types';
 
 // ---- Flattening
@@ -143,48 +144,86 @@ export interface PathGeometry {
   // Stroke pieces: quads [ax, ay, bx, by, cx, cy, dx, dy] and discs [cx, cy, r, 0].
   quads: number[];
   discs: number[];
+  // The same pieces as the shaders walk them, in chunks: a chunk's box [x0, y0, x1, y1]
+  // and counts [segs, quads, discs, 0], then its edges, quads and discs. Each chunk is
+  // whole subpaths, and a closed contour winds zero times around any point outside its
+  // box, so a pixel can skip every chunk whose box it is not near: a text of hundreds of
+  // glyphs costs a pixel about one glyph's edges.
+  packed: number[];
+  chunks: number;
   // Local bounds of the fill and of everything the stroke covers.
   fillBounds: Box;
   bounds: Box;
 }
 
+type Painting = Pick<Path, 'stroke'>;
+
 export function pathGeometry(path: Pick<Path, 'segments' | 'stroke'>, tolerance: number): PathGeometry {
-  const subpaths = flatten(path.segments, tolerance);
-  const segs: number[] = [];
-  const all: Point[] = [];
-  for (const s of subpaths) {
-    const n = s.points.length;
-    all.push(...s.points);
-    if (n < 2) continue;
-    for (let i = 0; i < n; i++) {
-      const a = s.points[i]!;
-      const b = s.points[(i + 1) % n]!;
-      if (a.x === b.x && a.y === b.y) continue;
-      segs.push(a.x, a.y, b.x, b.y);
-    }
-  }
-  const quads: number[] = [];
-  const discs: number[] = [];
-  if (path.stroke && path.stroke.width > 0) strokePieces(subpaths, path.stroke.width / 2, path.stroke.cap, path.stroke.join, quads, discs);
-  const fillBounds = boxOfPoints(all);
-  let bounds = fillBounds;
-  for (let i = 0; i < quads.length; i += 2) bounds = unionBox(bounds, { x: quads[i]!, y: quads[i + 1]!, width: 0, height: 0 });
-  for (let i = 0; i < discs.length; i += 4) bounds = unionBox(bounds, inflateBox({ x: discs[i]!, y: discs[i + 1]!, width: 0, height: 0 }, discs[i + 2]!));
-  return { segs, quads, discs, fillBounds, bounds };
+  return chunkedGeometry(
+    flatten(path.segments, tolerance).map((s) => [s]),
+    path,
+  );
 }
 
-// Flattened paths cached by node object and tolerance. Nodes are replaced, never changed,
-// so a node seen before has the same geometry; dropped nodes free their entries.
+// Subpaths grouped into chunks (a glyph's contours are one), with their stroke.
+export function chunkedGeometry(groups: Subpath[][], paint: Painting): PathGeometry {
+  const segs: number[] = [];
+  const quads: number[] = [];
+  const discs: number[] = [];
+  const packed: number[] = [];
+  let chunks = 0;
+  let fillBounds = { ...EMPTY_BOX };
+  let bounds = { ...EMPTY_BOX };
+  for (const subpaths of groups) {
+    const s0 = segs.length;
+    const q0 = quads.length;
+    const d0 = discs.length;
+    const all: Point[] = [];
+    for (const s of subpaths) {
+      const n = s.points.length;
+      all.push(...s.points);
+      if (n < 2) continue;
+      for (let i = 0; i < n; i++) {
+        const a = s.points[i]!;
+        const b = s.points[(i + 1) % n]!;
+        if (a.x === b.x && a.y === b.y) continue;
+        segs.push(a.x, a.y, b.x, b.y);
+      }
+    }
+    if (paint.stroke && paint.stroke.width > 0) strokePieces(subpaths, paint.stroke.width / 2, paint.stroke.cap, paint.stroke.join, quads, discs);
+    const fill = boxOfPoints(all);
+    let box = fill;
+    for (let i = q0; i < quads.length; i += 2) box = unionBox(box, { x: quads[i]!, y: quads[i + 1]!, width: 0, height: 0 });
+    for (let i = d0; i < discs.length; i += 4) box = unionBox(box, inflateBox({ x: discs[i]!, y: discs[i + 1]!, width: 0, height: 0 }, discs[i + 2]!));
+    fillBounds = unionBox(fillBounds, fill);
+    bounds = unionBox(bounds, box);
+    if (segs.length === s0 && quads.length === q0 && discs.length === d0) continue;
+    packed.push(box.x, box.y, box.x + box.width, box.y + box.height, (segs.length - s0) / 4, (quads.length - q0) / 8, (discs.length - d0) / 4, 0);
+    packed.push(...segs.slice(s0), ...quads.slice(q0), ...discs.slice(d0));
+    chunks++;
+  }
+  return { segs, quads, discs, packed, chunks, fillBounds, bounds };
+}
+
+// Flattened paths and texts cached by node object and tolerance. Nodes are replaced,
+// never changed, so a node seen before has the same geometry; dropped nodes free their
+// entries.
 const cache = new WeakMap<object, Map<number, PathGeometry>>();
 
-export function cachedPathGeometry(path: Path, tolerance: number): PathGeometry {
-  let byTolerance = cache.get(path);
-  if (!byTolerance) cache.set(path, (byTolerance = new Map()));
+export function cachedPathGeometry(shape: Path | Text, tolerance: number): PathGeometry {
+  let byTolerance = cache.get(shape);
+  if (!byTolerance) cache.set(shape, (byTolerance = new Map()));
   let g = byTolerance.get(tolerance);
   if (!g) {
     // Zooming visits a few tolerances; more than that is a sign of churn, so start over.
     if (byTolerance.size > 4) byTolerance.clear();
-    g = pathGeometry(path, tolerance);
+    g =
+      shape.type === 'path'
+        ? pathGeometry(shape, tolerance)
+        : chunkedGeometry(
+            cachedLayout(shape).glyphs.map((glyph) => flatten(glyph, tolerance)),
+            shape,
+          );
     byTolerance.set(tolerance, g);
   }
   return g;
@@ -398,6 +437,8 @@ export function isDrawable(s: Shape): boolean {
       return !!s.stroke && s.stroke.width > 0 && (s.x1 !== s.x2 || s.y1 !== s.y2);
     case 'path':
       return s.segments.length > 1;
+    case 'text':
+      return s.text.length > 0 && s.size > 0;
   }
 }
 
@@ -415,12 +456,16 @@ export function geometryBounds(s: Shape, tolerance = 0.25): Box {
       ]);
     case 'path':
       return cachedPathGeometry(s, tolerance).fillBounds;
+    case 'text':
+      return cachedLayout(s).box;
   }
 }
 
 // Everything the shape may paint, stroke included, in its own coordinates.
 export function paintedBounds(s: Shape, tolerance = 0.25): Box {
   if (s.type === 'path') return cachedPathGeometry(s, tolerance).bounds;
+  // A text's frame, and its glyphs where they reach out of it (with their stroke).
+  if (s.type === 'text') return unionBox(cachedLayout(s).box, cachedPathGeometry(s, tolerance).bounds);
   const box = geometryBounds(s, tolerance);
   const hw = s.stroke ? s.stroke.width / 2 : 0;
   if (!hw) return box;
@@ -463,6 +508,13 @@ export function hitShape(s: Shape, px: number, py: number, slop: number): boolea
       const g = cachedPathGeometry(s, 0.25);
       const d = pathDistances(g, s.fillRule === 'evenodd', px, py);
       return (!!s.fill && d.fill <= slop) || (!!s.stroke && d.stroke <= slop) || (!s.stroke && Math.abs(d.fill) <= slop);
+    }
+    case 'text': {
+      // Anywhere in its frame, as between letters; and its glyphs where they reach out.
+      const box = cachedLayout(s).box;
+      if (px >= box.x - slop && py >= box.y - slop && px <= box.x + box.width + slop && py <= box.y + box.height + slop) return true;
+      const d = pathDistances(cachedPathGeometry(s, 0.25), false, px, py);
+      return d.fill <= slop || (!!s.stroke && d.stroke <= slop);
     }
   }
 }

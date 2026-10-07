@@ -4,11 +4,12 @@
 
 import { app } from './app';
 import * as edit from './edit';
-import { exportGlslDialog, exportPngDialog, exportShadertoyDialog, exportSvgDialog } from './export';
-import { documentDialog, newDocument, open, save, saveAs } from './io';
+import { exportGlslDialog, exportPngDialog, exportShadertoyDialog, exportSvgDialog, exportWgslDialog } from './export';
+import { documentDialog, loadFont, newDocument, open, save, saveAs } from './io';
 import { TOOLS } from './tools/index';
 import { showHtml } from './ui/dialog';
-import { isTyping } from './view';
+import type { Backend } from './render/renderer';
+import { isTyping, rememberBackend } from './view';
 
 export interface Command {
   id: string;
@@ -32,10 +33,12 @@ const commands: Command[] = [
   { id: 'save', label: 'Сохранить', keys: ['Mod+S'], icon: 'save', run: save },
   { id: 'save-as', label: 'Сохранить как…', keys: ['Mod+Shift+S'], run: saveAs },
   { id: 'document', label: 'Размер документа…', run: documentDialog },
+  { id: 'load-font', label: 'Загрузить шрифт…', icon: 'text', run: loadFont },
   { id: 'export-svg', label: 'Экспорт SVG…', keys: ['Mod+Shift+E'], icon: 'export', run: exportSvgDialog },
   { id: 'export-png', label: 'Экспорт PNG…', icon: 'image', run: exportPngDialog },
   { id: 'export-glsl', label: 'Экспорт GLSL…', icon: 'code', run: exportGlslDialog },
   { id: 'export-shadertoy', label: 'Экспорт для Shadertoy…', icon: 'code', run: exportShadertoyDialog },
+  { id: 'export-wgsl', label: 'Экспорт WGSL…', icon: 'code', run: exportWgslDialog },
 
   { id: 'undo', label: 'Отменить', keys: ['Mod+Z'], icon: 'undo', run: () => app.undo(), enabled: () => app.history.canUndo || !!app.tool?.pending?.() },
   { id: 'redo', label: 'Повторить', keys: ['Mod+Shift+Z', 'Mod+Y'], icon: 'redo', run: () => app.redo(), enabled: () => app.history.canRedo },
@@ -58,6 +61,8 @@ const commands: Command[] = [
   { id: 'zoom-actual', label: 'Масштаб 100 %', keys: ['Mod+1'], run: () => app.view.actualSize() },
   { id: 'zoom-fit', label: 'Вписать в окно', keys: ['Mod+0'], icon: 'fit', run: () => app.view.fit() },
   { id: 'panels', label: 'Панели', keys: ['F8'], icon: 'panel', run: togglePanels, checked: () => !document.body.classList.contains('no-panels') },
+  { id: 'renderer-webgpu', label: 'Рисовать через WebGPU', run: () => useBackend('webgpu'), enabled: () => !!navigator.gpu, checked: () => app.view?.renderer?.kind === 'webgpu' },
+  { id: 'renderer-webgl2', label: 'Рисовать через WebGL 2', run: () => useBackend('webgl2'), checked: () => app.view?.renderer?.kind === 'webgl2' },
 
   { id: 'layer-new', label: 'Новый слой', keys: ['Mod+Shift+L'], icon: 'plus', run: edit.newLayer },
   { id: 'layer-duplicate', label: 'Дублировать слой', icon: 'duplicate', run: () => edit.copyLayer() },
@@ -75,9 +80,9 @@ const commands: Command[] = [
 export const COMMANDS = new Map(commands.map((c) => [c.id, c]));
 
 export const MENUS: { id: string; label: string; items: string[] }[] = [
-  { id: 'file', label: 'Файл', items: ['new', 'open', '-', 'save', 'save-as', '-', 'export-svg', 'export-png', 'export-glsl', 'export-shadertoy', '-', 'document'] },
+  { id: 'file', label: 'Файл', items: ['new', 'open', '-', 'save', 'save-as', '-', 'export-svg', 'export-png', 'export-glsl', 'export-shadertoy', 'export-wgsl', '-', 'document', 'load-font'] },
   { id: 'edit', label: 'Правка', items: ['undo', 'redo', '-', 'cut', 'copy', 'paste', 'duplicate', 'delete', '-', 'select-all', 'deselect', '-', 'group', 'ungroup', '-', 'bring-forward', 'send-backward', 'bring-front', 'send-back'] },
-  { id: 'view', label: 'Вид', items: ['zoom-in', 'zoom-out', 'zoom-actual', 'zoom-fit', '-', 'panels', '-', 'shortcuts', 'about'] },
+  { id: 'view', label: 'Вид', items: ['zoom-in', 'zoom-out', 'zoom-actual', 'zoom-fit', '-', 'panels', '-', 'renderer-webgpu', 'renderer-webgl2', '-', 'shortcuts', 'about'] },
   { id: 'layer', label: 'Слой', items: ['layer-new', 'layer-duplicate', 'layer-delete', '-', 'layer-up', 'layer-down', '-', 'move-to-layer'] },
 ];
 
@@ -87,6 +92,12 @@ export function runCommand(id: string): unknown {
   // Commands that change the document act on finished work, not a path half drawn.
   if (!id.startsWith('tool-') && !['undo', 'zoom-in', 'zoom-out', 'zoom-actual', 'zoom-fit', 'panels'].includes(id)) app.finish();
   return c.run();
+}
+
+// Draws with another renderer from now on, and remembers it for the next start.
+function useBackend(kind: Backend): Promise<void> {
+  rememberBackend(kind);
+  return app.view.start(kind);
 }
 
 function togglePanels(): void {
@@ -121,9 +132,13 @@ function comboOf(e: KeyboardEvent): string {
   return [mod && 'Mod', e.altKey && 'Alt', e.shiftKey && 'Shift', keyName(e)].filter(Boolean).join('+');
 }
 
+const byKey = new Map<string, Command>();
+for (const c of commands) for (const k of c.keys ?? []) byKey.set(k, c);
+
+// The command a key press is the shortcut of, if any.
+export const commandFor = (e: KeyboardEvent): Command | null => byKey.get(comboOf(e)) ?? null;
+
 export function installKeyboard(): void {
-  const byKey = new Map<string, Command>();
-  for (const c of commands) for (const k of c.keys ?? []) byKey.set(k, c);
   window.addEventListener('keydown', (e) => {
     if (document.querySelector('dialog[open]') || isTyping(e.target)) return;
     if (document.querySelector('.menu--open') && e.key !== 'Escape') return;
@@ -162,6 +177,6 @@ function shortcutsHelp(): void {
 function about(): void {
   showHtml(
     'HTML Vector Editor',
-    `<p>Версия ${__APP_VERSION__}.</p><p>Векторный редактор в одном HTML-файле. Документ — векторная модель (JSON); экран рисуется через WebGL 2, а экспорт даёт SVG, самостоятельный фрагментный шейдер GLSL ES 3.00 и PNG — одну и ту же картинку.</p><p>Ничего не загружается из сети: файл работает офлайн.</p>`,
+    `<p>Версия ${__APP_VERSION__}.</p><p>Векторный редактор в одном HTML-файле. Документ — векторная модель (JSON); экран рисуется через WebGPU или WebGL 2, а экспорт даёт SVG, PNG, самостоятельные шейдеры GLSL ES 3.00 и WGSL — одну и ту же картинку.</p><p>Ничего не загружается из сети: файл работает офлайн.</p><p>Встроенный шрифт — Inter (латиница и кириллица), © The Inter Project Authors, по лицензии SIL Open Font License 1.1.</p>`,
   );
 }

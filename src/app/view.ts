@@ -1,15 +1,18 @@
 // The canvas: zoom and pan (a property of the view only — the document's coordinates never
 // change), drawing on request, and pointer input passed to the tool in document
-// coordinates. The document is drawn with WebGL 2 on one canvas; selection frames,
-// handles and other aids are drawn on a 2D canvas over it.
+// coordinates. The document is drawn with WebGPU where the browser has it, with WebGL 2
+// otherwise (or when asked), on one canvas; selection frames, handles and other aids are
+// drawn on a 2D canvas over it.
 
 import { locate } from '../core/document';
 import { drawList } from '../core/draw';
 import { apply } from '../core/matrix';
 import type { Matrix } from '../core/types';
 import { app } from './app';
-import type { Pasteboard } from './render/renderer';
+import { gpuDevice, onDeviceLost } from './render/gpu';
+import type { Backend, Pasteboard, ViewRenderer } from './render/renderer';
 import { Renderer } from './render/renderer';
+import { WebGpuRenderer } from './render/webgpu';
 import { frameOf, selectionFrame } from './selection';
 import type { ToolEvent } from './tools/tool';
 
@@ -35,11 +38,14 @@ export class View {
   zoom = 1;
   panX = 0;
   panY = 0;
-  renderer: Renderer | null = null;
+  renderer: ViewRenderer | null = null;
   error: string | null = null;
   cursor: { x: number; y: number } | null = null;
   readonly overlay: HTMLCanvasElement;
+  // Settles once a renderer is running, or it is clear none can.
+  ready: Promise<void> = Promise.resolve();
   private gl: WebGL2RenderingContext | null = null;
+  private used = false;
   private frame = 0;
   private colors: Pasteboard | null = null;
   private spaceHeld = false;
@@ -51,18 +57,19 @@ export class View {
 
   constructor(
     readonly workspace: HTMLElement,
-    readonly canvas: HTMLCanvasElement,
+    public canvas: HTMLCanvasElement,
+    prefer: Backend = preferredBackend(),
   ) {
     this.overlay = document.createElement('canvas');
     this.overlay.className = 'overlay';
     workspace.append(this.overlay);
-    this.startGl();
-    canvas.addEventListener('webglcontextlost', (e) => {
-      e.preventDefault();
+    this.start(prefer);
+    onDeviceLost(() => {
+      if (this.renderer?.kind !== 'webgpu') return;
       this.renderer = null;
-      this.showError('Контекст WebGL потерян. Пытаюсь восстановить…');
+      this.showError('Устройство WebGPU потеряно. Пытаюсь восстановить…');
+      this.start('webgpu');
     });
-    canvas.addEventListener('webglcontextrestored', () => this.startGl());
     new ResizeObserver(() => this.resize()).observe(workspace);
     matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
       this.colors = null;
@@ -71,18 +78,65 @@ export class View {
     this.listen();
   }
 
-  private startGl(): void {
-    try {
-      this.gl = this.canvas.getContext('webgl2', { alpha: false, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: false });
-      if (!this.gl) throw new Error('Браузер не дал контекст WebGL 2.');
-      this.renderer = new Renderer(this.gl);
-      this.error = null;
-      this.workspace.querySelector('.view-error')?.remove();
-    } catch (error) {
+  // Starts drawing with `prefer`, or with the other renderer if that one cannot run. A
+  // canvas keeps the kind of context it was first given, so a second start gets a fresh one.
+  start(prefer: Backend): Promise<void> {
+    this.ready = (async () => {
+      this.renderer?.dispose();
       this.renderer = null;
-      this.showError(`WebGL 2 недоступен, поэтому холст не рисуется. Документ можно открыть, сохранить и экспортировать в SVG. ${(error as Error).message}`);
-    }
-    this.requestRender();
+      this.gl = null;
+      if (this.used) this.freshCanvas();
+      this.used = true;
+      const reasons: string[] = [];
+      for (const kind of prefer === 'webgpu' ? (['webgpu', 'webgl2'] as const) : (['webgl2', 'webgpu'] as const)) {
+        try {
+          this.renderer = kind === 'webgpu' ? await this.startGpu() : this.startGl();
+          break;
+        } catch (error) {
+          reasons.push((error as Error).message);
+          // A canvas that gave one kind of context gives no other.
+          this.freshCanvas();
+        }
+      }
+      if (this.renderer) {
+        this.error = null;
+        this.workspace.querySelector('.view-error')?.remove();
+      } else this.showError(`Ни WebGPU, ни WebGL 2 недоступны, поэтому холст не рисуется. Документ можно открыть, сохранить и экспортировать в SVG. ${reasons.join(' ')}`);
+      app.emit('view');
+      this.requestRender();
+    })();
+    return this.ready;
+  }
+
+  private async startGpu(): Promise<ViewRenderer> {
+    if (!navigator.gpu) throw new Error('В браузере нет WebGPU.');
+    const device = await gpuDevice();
+    if (!device) throw new Error('WebGPU не дал устройство.');
+    return new WebGpuRenderer(device, this.canvas);
+  }
+
+  private startGl(): ViewRenderer {
+    this.gl = this.canvas.getContext('webgl2', { alpha: false, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: false });
+    if (!this.gl) throw new Error('Браузер не дал контекст WebGL 2.');
+    const canvas = this.canvas;
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      if (canvas !== this.canvas) return;
+      this.renderer = null;
+      this.showError('Контекст WebGL потерян. Пытаюсь восстановить…');
+    });
+    canvas.addEventListener('webglcontextrestored', () => canvas === this.canvas && this.start('webgl2'));
+    return new Renderer(this.gl);
+  }
+
+  private freshCanvas(): void {
+    const fresh = document.createElement('canvas');
+    fresh.id = this.canvas.id;
+    fresh.className = this.canvas.className;
+    fresh.width = this.canvas.width;
+    fresh.height = this.canvas.height;
+    this.canvas.replaceWith(fresh);
+    this.canvas = fresh;
   }
 
   private showError(text: string): void {
@@ -294,8 +348,9 @@ export class View {
         return;
       }
       if (e.button !== 0) return;
-      // Typing in a panel field ends there.
-      if (document.activeElement instanceof HTMLElement && isTyping(document.activeElement)) document.activeElement.blur();
+      // Typing in a panel field ends there; typing a text on the canvas goes on.
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && isTyping(active) && !active.classList.contains('text-input')) active.blur();
       this.pressed = true;
       app.tool.down?.(this.event(e));
     });
@@ -393,6 +448,25 @@ export class View {
     this.panX = cx - docX * z;
     this.panY = cy - docY * z;
     this.changed();
+  }
+}
+
+// The renderer asked for last (View → Renderer), else WebGPU where the browser has it.
+export function preferredBackend(): Backend {
+  try {
+    const saved = localStorage.getItem('vector.renderer');
+    if (saved === 'webgpu' || saved === 'webgl2') return saved;
+  } catch {
+    // Storage refused: the default.
+  }
+  return navigator.gpu ? 'webgpu' : 'webgl2';
+}
+
+export function rememberBackend(kind: Backend): void {
+  try {
+    localStorage.setItem('vector.renderer', kind);
+  } catch {
+    // Storage refused: it lasts this session.
   }
 }
 

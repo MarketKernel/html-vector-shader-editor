@@ -2,8 +2,10 @@
  * Drives the built page in headless Chrome: shapes drawn with every tool, moved, scaled,
  * rotated, restyled and grouped, then undone to an empty document and redone; layers
  * created, renamed, reordered, hidden, faded and blended; a file saved and opened again;
- * and the three renderings compared — the PNG export against the SVG export drawn by the
- * browser, and against the exported GLSL shader compiled on its own.
+ * texts typed, edited, restyled and set in a font dropped on the window; and the three
+ * renderings compared — the PNG export against the SVG export drawn by the
+ * browser, and against the exported GLSL shader compiled on its own; then the PWA of
+ * build/pages/ over HTTP, offline from its service worker.
  *
  * Needs `npm run build` first and a local Chrome (or `CHROME=/path/to/chrome`). No
  * dependencies beyond Node: the DevTools protocol is spoken over the built-in WebSocket.
@@ -15,12 +17,14 @@
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, extname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { checker, root } from '../tools/load.mjs';
 
 const APP = join(root, 'build', 'vector.html');
+const PAGES = join(root, 'build', 'pages');
 const shotsAt = process.argv.indexOf('--shots');
 const SHOTS = shotsAt > 0 ? process.argv[shotsAt + 1] : null;
 const CHROME =
@@ -51,6 +55,25 @@ if (!existsSync(APP)) {
 const { check, ok, done } = checker();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// build/pages/ over HTTP, as GitHub Pages serves it; `pagesDown` plays the network gone.
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.svg': 'image/svg+xml' };
+let pagesDown = false;
+const server = createServer(async (req, res) => {
+  if (pagesDown) return req.socket.destroy();
+  const path = new URL(req.url, 'http://localhost').pathname;
+  const name = path.endsWith('/') ? 'index.html' : basename(path);
+  try {
+    const body = await readFile(join(PAGES, name));
+    res.setHeader('content-type', TYPES[extname(name)] ?? 'application/octet-stream');
+    res.end(body);
+  } catch {
+    res.statusCode = 404;
+    res.end();
+  }
+});
+await new Promise((r) => server.listen(0, '127.0.0.1', r));
+const port = server.address().port;
+
 const profile = await mkdtemp(join(tmpdir(), 'vector-chrome-'));
 const flags = [
   '--headless=new',
@@ -61,6 +84,8 @@ const flags = [
   '--hide-scrollbars',
   '--use-angle=swiftshader',
   '--enable-unsafe-swiftshader',
+  // WebGPU in headless Chrome: on SwiftShader too, so the pictures stay the machine's own.
+  '--enable-unsafe-webgpu',
   '--allow-file-access-from-files',
 ];
 if (process.platform === 'linux') flags.push('--no-sandbox');
@@ -184,6 +209,12 @@ const setField = (label, value, section = null) =>
   })()`);
 const node = (i, layer = 0) => evaluate(`vector.doc().layers[${layer}].children[${i}]`);
 const children = (layer = 0) => evaluate(`vector.doc().layers[${layer}].children.map((n) => n.type)`);
+const until = async (expr, ms = 5000) => {
+  for (const end = Date.now() + ms; Date.now() < end; await sleep(100)) {
+    if (await evaluate(expr).catch(() => false)) return true;
+  }
+  return false;
+};
 const round = (v) => (Array.isArray(v) ? v.map(round) : Math.round(v * 100) / 100);
 
 try {
@@ -193,23 +224,32 @@ try {
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 820, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: pathToFileURL(APP).href });
   await sleep(800);
+  await evaluate('vector.app.view.ready');
 
   check('starts with an empty document', await evaluate(`[vector.doc().width, vector.doc().height, vector.doc().layers.length, vector.doc().layers[0].children.length]`), [800, 600, 1, 0]);
-  check('WebGL 2 is there', await evaluate(`!!vector.app.view.renderer && !vector.app.view.error`), true);
-  const noGl = await evaluate(`(() => {
+  const gpu = await evaluate('!!navigator.gpu');
+  check('draws with WebGPU where there is one, else WebGL 2', await evaluate(`!vector.app.view.error && vector.app.view.renderer?.kind`), gpu ? 'webgpu' : 'webgl2');
+  if (!gpu) console.log('  No WebGPU in this Chrome: its renderer and the WGSL export are not tested.');
+  check('the status bar says which', await evaluate(`document.querySelector('.status-renderer').textContent`), gpu ? 'WebGPU' : 'WebGL 2');
+  const noGl = await evaluate(`(async () => {
+    const getContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = () => null;
     const ws = document.createElement('section');
     const c = document.createElement('canvas');
-    c.getContext = () => null;
     ws.append(c);
     document.body.append(ws);
-    new vector.View(ws, c);
+    try {
+      await new vector.View(ws, c).ready;
+    } finally {
+      HTMLCanvasElement.prototype.getContext = getContext;
+    }
     const text = ws.querySelector('.view-error')?.textContent ?? '';
     ws.remove();
     return text;
   })()`);
-  ok(`without WebGL 2, a message instead of a blank canvas: "${noGl.slice(0, 40)}…"`, noGl.startsWith('WebGL 2 недоступен'));
+  ok(`without WebGPU or WebGL 2, a message instead of a blank canvas: "${noGl.slice(0, 40)}…"`, noGl.startsWith('Ни WebGPU, ни WebGL 2 недоступны'));
   check('menus', await evaluate(`[...document.querySelectorAll('.menu-button')].map((b) => b.textContent)`), ['Файл', 'Правка', 'Вид', 'Слой']);
-  check('seven tools', await evaluate(`[...document.querySelectorAll('.tool')].map((b) => b.dataset.tool)`), ['select', 'rect', 'ellipse', 'line', 'pen', 'zoom', 'pan']);
+  check('eight tools', await evaluate(`[...document.querySelectorAll('.tool')].map((b) => b.dataset.tool)`), ['select', 'rect', 'ellipse', 'line', 'pen', 'text', 'zoom', 'pan']);
   await shot('empty');
   const empty = await evaluate('vector.canonical()');
 
@@ -399,6 +439,76 @@ try {
   check('restored', await evaluate('vector.canonical()'), edited);
   check('and still unsaved', await evaluate('vector.app.history.dirty'), true);
 
+  // ---- 4. Text: typed on the canvas, edited, restyled, set in a font of its own
+  await evaluate(`vector.open(JSON.stringify({ version: 2, width: 600, height: 400, background: '#ffffff', fonts: [], layers: [{ id: 'words', name: 'Слой 1', children: [] }] }))`);
+  await press('t');
+  check('T is the text tool', await evaluate('vector.app.tool.id'), 'text');
+  await clickAt(40, 40);
+  ok('a click starts a text, the keys go to it', await evaluate(`document.activeElement?.classList.contains('text-input') && vector.editing()?.id === null`));
+  await send('Input.insertText', { text: 'Привет, AV' });
+  await send('Input.insertText', { text: '\n' });
+  await send('Input.insertText', { text: 'Мир' });
+  check('typed into a draft, nothing committed yet', [await evaluate('vector.editing().text'), (await children()).length], ['Привет, AV\nМир', 0]);
+  await shot('text-editing');
+  await press('Escape');
+  check('Esc commits the text', await children(), ['text']);
+  const typed = await node(0);
+  check('with what was typed, in the built-in font', [typed.text, typed.font, typed.size], ['Привет, AV\nМир', 'inter', 32]);
+  check('Esc goes back to selecting, the text selected', [await evaluate('vector.app.tool.id'), await evaluate('vector.app.selection')], ['select', [typed.id]]);
+  check('one step', await evaluate('vector.app.history.size'), 1);
+  const typedFrame = await evaluate('vector.frame()');
+  ok(`its frame is two lines high (${round(typedFrame[3])})`, typedFrame[3] > 2 * 32 && typedFrame[3] < 3 * 32);
+  ok('the first line starts where it was clicked', Math.abs(typedFrame[4] - 40) < 0.01 && Math.abs(typedFrame[5] - 40) < 0.01);
+  await press('z', MOD);
+  check('undo takes the text away', (await children()).length, 0);
+  await press('z', MOD | SHIFT);
+  check('redo brings it back', (await node(0)).text, 'Привет, AV\nМир');
+  // A double click with the select tool edits it, the caret where the click was.
+  const word = await screen(60, 55);
+  for (const clickCount of [1, 2])
+    for (const type of ['mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x: word[0], y: word[1], button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount });
+  await sleep(60);
+  check('a double click edits the text', await evaluate('vector.editing()?.id'), typed.id);
+  await evaluate(`document.querySelector('.text-input').setSelectionRange(6, 6)`);
+  await send('Input.insertText', { text: ' мой' });
+  await press('Escape');
+  check('edited in place', (await node(0)).text, 'Привет мой, AV\nМир');
+  check('the edit is one more step', await evaluate('vector.app.history.size'), 2);
+  check('size from the panel', (await setField('Размер', '48', 'Шрифт')) && (await node(0)).size, 48);
+  check('alignment from the panel', (await setField('Выравнивание', 'middle', 'Шрифт')) && (await node(0)).align, 'middle');
+  await evaluate(`vector.app.apply(vector.transform([${JSON.stringify(typed.id)}], [2, 0, 0, 2, -40, -40]))`);
+  const doubled = await node(0);
+  check('scaled the same both ways: into its size, not its matrix', [doubled.size, doubled.transform], [96, [1, 0, 0, 1, 0, 0]]);
+  await evaluate(`vector.app.apply(vector.transform([${JSON.stringify(typed.id)}], [0, 1, -1, 0, 400, 0]))`);
+  check('turned: into its matrix', round((await node(0)).transform.slice(0, 4)), [0, 1, -1, 0]);
+  await press('z', MOD);
+  await press('z', MOD);
+  // A font dropped on the window: carried by the document, set on the selected text.
+  const cffFont = (await readFile(join(root, 'tests/fixtures/inter-cff-test.otf'))).toString('base64');
+  await evaluate(`(() => {
+    const bytes = Uint8Array.from(atob(${JSON.stringify(cffFont)}), (c) => c.charCodeAt(0));
+    const dt = new DataTransfer();
+    dt.items.add(new File([bytes], 'InterCFFTest.otf', { type: 'font/otf' }));
+    window.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+  })()`);
+  await sleep(300);
+  const fonts = await evaluate('vector.doc().fonts.map((f) => [f.family, f.style])');
+  check('the dropped font is in the document', fonts, [['Inter CFF Test', 'Regular']]);
+  check('and the text is set in it', (await node(0)).font, await evaluate('vector.doc().fonts[0].id'));
+  check('the font list offers it', await evaluate(`[...document.querySelectorAll('#properties select option')].map((o) => o.textContent).filter((t) => t.startsWith('Inter'))`), ['Inter Regular', 'Inter CFF Test Regular']);
+  await press('z', MOD);
+  check('undo: the old font, and the document without the new one', [(await node(0)).font, await evaluate('vector.doc().fonts.length')], ['inter', 0]);
+  await press('z', MOD | SHIFT);
+  const withFont = await evaluate('vector.canonical()');
+  check('saved with its font and opened again, the same', await evaluate(`vector.open(vector.json())`) && (await evaluate('vector.canonical()')), withFont);
+  // Copied into another document, the text brings its font along.
+  await evaluate(`vector.app.select([vector.doc().layers[0].children[0].id])`);
+  await press('c', MOD);
+  await evaluate(`vector.open(JSON.stringify({ version: 2, width: 300, height: 200, background: null, fonts: [], layers: [{ id: 'other', name: 'Other', children: [] }] }))`);
+  await press('v', MOD);
+  check('pasted into another document, with its font', [await children(), await evaluate('vector.doc().fonts.length')], [['text'], 1]);
+  check('which then saves and opens', await evaluate(`vector.open(vector.json())`), true);
+
   // ---- The three renderings of the showcase document
   const showcase = await readFile(join(root, 'tests/fixtures/showcase.vector.json'), 'utf8');
   check('opens the showcase', await evaluate(`vector.open(${JSON.stringify(showcase)}, 'showcase.vector.json')`), true);
@@ -412,7 +522,7 @@ try {
   if (SHOTS) {
     // The three pictures side by side, and where the SVG differs, for a look by eye.
     const strip = await evaluate(`(async () => {
-      const png = vector.images.png(1), svg = await vector.images.svg(), glsl = vector.images.glsl();
+      const png = await vector.images.png(1), svg = await vector.images.svg(), glsl = vector.images.glsl();
       const w = png.width, h = png.height;
       const c = document.createElement('canvas'); c.width = w * 4; c.height = h;
       const ctx = c.getContext('2d');
@@ -433,9 +543,31 @@ try {
   // In a wider view the page is centred with its proportions kept, on a dark surround.
   const wide = await evaluate(`(() => { const d = vector.images.shadertoy(undefined, 960, 320); const at = (x, y) => Array.from(d.data.slice((y * 960 + x) * 4, (y * 960 + x) * 4 + 4)); return [at(10, 160), at(950, 160), at(240 + 470, 300)]; })()`);
   check('Shadertoy: the page fitted into a wider view', wide.slice(0, 2), [[31, 31, 31, 255], [31, 31, 31, 255]]);
-  check('Shadertoy: and the page itself where it should be', wide[2], await evaluate(`Array.from(vector.images.png(1).data.slice((300 * 480 + 470) * 4, (300 * 480 + 470) * 4 + 4))`));
+  check('Shadertoy: and the page itself where it should be', wide[2], await evaluate(`(async () => Array.from((await vector.images.png(1)).data.slice((300 * 480 + 470) * 4, (300 * 480 + 470) * 4 + 4)))()`));
+  if (gpu) {
+    // The two renderers share the SDF arithmetic line for line (sdf.ts and its WGSL twin)
+    // and the blend states; the WGSL export is the renderer's library with constants.
+    await compare("vector.images.png(1, 'webgpu')", "vector.images.png(1, 'webgl2')", 'WebGPU against WebGL 2', GLSL_SHARE);
+    await compare('vector.images.png(1)', 'vector.images.wgsl()', 'PNG against WGSL', GLSL_SHARE);
+  }
   await compare('vector.images.png(2)', 'vector.images.svg(undefined, 2)', 'PNG ×2 against SVG ×2', SVG_SHARE);
   await compare('vector.images.png(2)', 'vector.images.glsl(undefined, 2)', 'PNG ×2 against GLSL ×2', GLSL_SHARE);
+
+  // Texts: the built-in font and one the document carries, kerned, spaced, aligned, in
+  // two lines, turned and outlined.
+  const textDoc = await readFile(join(root, 'tests/fixtures/text.vector.json'), 'utf8');
+  check('opens the texts', await evaluate(`vector.open(${JSON.stringify(textDoc)}, 'text.vector.json')`), true);
+  // Small glyphs are mostly edge, where Chrome's area coverage and the shaders' distance
+  // ramp part most (at corners and thin stems): at 1× the allowance is doubled.
+  await compare('vector.images.png(1)', 'vector.images.svg()', 'texts: PNG against SVG', SVG_SHARE * 2);
+  await compare('vector.images.png(1)', 'vector.images.glsl()', 'texts: PNG against GLSL', GLSL_SHARE);
+  await compare('vector.images.png(2)', 'vector.images.svg(undefined, 2)', 'texts ×2: PNG against SVG', SVG_SHARE);
+  if (gpu) await compare("vector.images.png(1, 'webgpu')", "vector.images.png(1, 'webgl2')", 'texts: WebGPU against WebGL 2', GLSL_SHARE);
+  if (SHOTS) {
+    await evaluate(`vector.app.select(['lines'])`);
+    await evaluate('vector.app.view.render()');
+    await shot('text');
+  }
 
   // A transparent page: blending onto nothing, half-transparent fills, a group's opacity.
   const clear = {
@@ -456,11 +588,15 @@ try {
     ],
   };
   await evaluate(`vector.open(${JSON.stringify(JSON.stringify(clear))})`);
-  check('a transparent corner stays transparent', await evaluate('Array.from(vector.images.png(1).data.slice(0, 4))'), [0, 0, 0, 0]);
-  const half = await evaluate('Array.from(vector.images.png(1).data.slice((30 * 200 + 30) * 4, (30 * 200 + 30) * 4 + 4))');
+  check('a transparent corner stays transparent', await evaluate('(async () => Array.from((await vector.images.png(1)).data.slice(0, 4)))()'), [0, 0, 0, 0]);
+  const half = await evaluate('(async () => Array.from((await vector.images.png(1)).data.slice((30 * 200 + 30) * 4, (30 * 200 + 30) * 4 + 4)))()');
   check('a half-transparent fill on nothing keeps its alpha', [half[2], half[3]], [255, 128]);
   await compare('vector.images.png(1)', 'vector.images.svg()', 'transparent: PNG against SVG', SVG_SHARE * 2);
   await compare('vector.images.png(1)', 'vector.images.glsl()', 'transparent: PNG against GLSL', GLSL_SHARE);
+  if (gpu) {
+    await compare("vector.images.png(1, 'webgpu')", "vector.images.png(1, 'webgl2')", 'transparent: WebGPU against WebGL 2', GLSL_SHARE);
+    await compare('vector.images.png(1)', 'vector.images.wgsl()', 'transparent: PNG against WGSL', GLSL_SHARE);
+  }
 
   // ---- 5. Hundreds of objects: drawing and dragging stay quick
   await evaluate(`(() => {
@@ -475,18 +611,18 @@ try {
     }
     vector.open(JSON.stringify({ version: 1, width: 800, height: 600, background: '#ffffff', layers: [{ id: 'many', name: 'Many', visible: true, locked: false, opacity: 1, blend: 'normal', children: shapes }] }));
   })()`);
-  const timing = await evaluate(`(() => {
-    const gl = vector.app.view.renderer.gl;
-    const frame = () => { const t = performance.now(); vector.app.view.render(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4)); return performance.now() - t; };
-    frame();
-    const draw = Math.min(frame(), frame(), frame());
+  const timing = await evaluate(`(async () => {
+    const renderer = vector.app.view.renderer;
+    const frame = async () => { const t = performance.now(); vector.app.view.render(); await renderer.finish(); return performance.now() - t; };
+    await frame();
+    const draw = Math.min(await frame(), await frame(), await frame());
     vector.run('select-all');
     const t = performance.now();
     for (let i = 1; i <= 10; i++) vector.app.apply(vector.transform(vector.app.selection, [1, 0, 0, 1, i, i]), { key: 'perf' });
     const move = (performance.now() - t) / 10;
     return { draw, move, steps: vector.app.history.size };
   })()`);
-  console.log(`  600 shapes: a frame in ${timing.draw.toFixed(1)} ms (SwiftShader, no GPU), moving all of them ${timing.move.toFixed(1)} ms a step`);
+  console.log(`  600 shapes: a frame in ${timing.draw.toFixed(1)} ms (${await evaluate('vector.app.view.renderer.kind')} on SwiftShader, no GPU), moving all of them ${timing.move.toFixed(1)} ms a step`);
   ok('600 shapes draw in under 250 ms even on SwiftShader', timing.draw < 250);
   ok('moving 600 shapes takes under 50 ms a step', timing.move < 50);
   check('ten moves, one step', timing.steps, 1);
@@ -510,17 +646,49 @@ try {
   check('the Shadertoy dialog compiled its text', await evaluate(`document.querySelector('dialog h2').textContent === 'Экспорт для Shadertoy' && document.querySelector('.glsl-log').hidden && document.querySelector('dialog textarea').value.includes('void mainImage(')`), true);
   await shot('export-shadertoy');
   await evaluate(`document.querySelector('dialog .dialog-close').click()`);
+  if (gpu) {
+    await evaluate(`vector.run('export-wgsl')`);
+    const compiled = await evaluate(`new Promise((resolve) => {
+      const started = Date.now();
+      const look = () => {
+        const live = document.querySelector('.glsl-live');
+        const drawn = live && live.getContext('2d').getImageData(live.width / 2, live.height / 2, 1, 1).data[3] > 0;
+        if (drawn || !document.querySelector('.glsl-log').hidden || Date.now() - started > 20000) resolve(drawn && document.querySelector('.glsl-log').hidden);
+        else setTimeout(look, 100);
+      };
+      look();
+    })`);
+    check('the WGSL dialog ran its text with WebGPU', [await evaluate(`document.querySelector('dialog h2').textContent`), compiled], ['Экспорт WGSL', true]);
+    await shot('export-wgsl');
+    await evaluate(`document.querySelector('dialog .dialog-close').click()`);
+    // The other renderer on request, on a canvas of its own; and back.
+    await evaluate(`vector.run('renderer-webgl2')`);
+    await evaluate('vector.app.view.ready');
+    check('View → WebGL 2 switches the renderer', await evaluate(`[vector.app.view.renderer.kind, document.querySelectorAll('#view').length, document.querySelector('.status-renderer').textContent]`), ['webgl2', 1, 'WebGL 2']);
+    await evaluate(`vector.run('renderer-webgpu')`);
+    await evaluate('vector.app.view.ready');
+    check('and back to WebGPU', await evaluate('vector.app.view.renderer.kind'), 'webgpu');
+  }
   await evaluate(`vector.run('export-svg')`);
   await sleep(300);
   check('the SVG dialog shows the text', await evaluate(`document.querySelector('dialog textarea').value.startsWith('<svg')`), true);
   await shot('export-svg');
   await evaluate(`document.querySelector('dialog .dialog-close').click()`);
   await evaluate(`vector.run('export-png')`);
-  await sleep(400);
-  check('the PNG dialog has a preview', await evaluate(`document.querySelector('dialog img').naturalWidth`), 480);
+  // The preview is drawn and encoded asynchronously: wait for it to show the width wanted.
+  const previewWidth = (want) =>
+    evaluate(`new Promise((resolve) => {
+      const started = Date.now();
+      const look = () => {
+        const w = document.querySelector('dialog img')?.naturalWidth ?? 0;
+        if (w === ${want} || Date.now() - started > 5000) resolve(w);
+        else setTimeout(look, 50);
+      };
+      look();
+    })`);
+  check('the PNG dialog has a preview', await previewWidth(480), 480);
   await evaluate(`document.querySelector('dialog [data-scale="2"]').click()`);
-  await sleep(400);
-  check('at 2×', await evaluate(`document.querySelector('dialog img').naturalWidth`), 960);
+  check('at 2×', await previewWidth(960), 960);
   await evaluate(`document.querySelector('dialog .dialog-close').click()`);
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 780, deviceScaleFactor: 2, mobile: true });
   await sleep(300);
@@ -530,10 +698,25 @@ try {
   await evaluate(`vector.run('panels')`);
   await shot('narrow-panels');
   check('no horizontal scroll when narrow', await evaluate('document.documentElement.scrollWidth <= window.innerWidth'), true);
+
+  // The PWA: its CSP lets in the manifest and the service worker, which keeps it offline.
+  await send('Emulation.clearDeviceMetricsOverride');
+  await send('Page.navigate', { url: `http://127.0.0.1:${port}/` });
+  const editor = `document.readyState === 'complete' && typeof vector === 'object' && document.querySelectorAll('.tool').length === 8`;
+  check('pwa: service worker in control', await until(`navigator.serviceWorker.controller !== null`), true);
+  check('pwa: the editor', await until(editor), true);
+  check('pwa: manifest parsed', (await send('Page.getAppManifest')).errors, []);
+  check('pwa: installable', (await send('Page.getInstallabilityErrors')).installabilityErrors, []);
+  pagesDown = true;
+  await send('Page.reload');
+  check('pwa: offline', await until(editor), true);
+  check('pwa: offline, it draws', await evaluate(`vector.app.view.ready.then(() => !vector.app.view.error && !!vector.app.view.renderer)`), true);
+  pagesDown = false;
 } finally {
   if (errors.length) check('no errors on the page', errors, []);
   ws.close();
   chrome.kill();
+  server.close();
   await sleep(200);
   await rm(profile, { recursive: true, force: true }).catch(() => {});
 }

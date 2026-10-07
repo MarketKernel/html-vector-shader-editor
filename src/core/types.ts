@@ -5,7 +5,7 @@
 // Fill, Stroke and Shape are discriminated unions so gradients, text and images can join
 // them later as new variants rather than as optional fields on the old ones.
 
-export const DOCUMENT_VERSION = 1;
+export const DOCUMENT_VERSION = 2;
 
 // [a, b, c, d, e, f], the SVG order: x' = a·x + c·y + e, y' = b·x + d·y + f.
 export type Matrix = [number, number, number, number, number, number];
@@ -21,6 +21,19 @@ export interface Document {
   background: string | null;
   // Bottom to top.
   layers: Layer[];
+  // Fonts loaded into the document, carried in it so it draws the same anywhere. The
+  // built-in font is not among them.
+  fonts: FontFace[];
+}
+
+export interface FontFace {
+  // Made from the file's contents (fonts.ts fontId): the same file has the same id in
+  // every document.
+  id: string;
+  family: string;
+  style: string;
+  // The font file, base64.
+  data: string;
 }
 
 export interface Layer {
@@ -113,7 +126,28 @@ export interface Path extends Painted {
   fillRule: FillRule;
 }
 
-export type Shape = Rect | Ellipse | Line | Path;
+export type TextAlign = 'start' | 'middle' | 'end';
+export const TEXT_ALIGNS: readonly TextAlign[] = ['start', 'middle', 'end'];
+
+// Lines of text set in one font, drawn by the glyphs' outlines. (x, y) is the alignment
+// point on the first line's baseline, as for SVG's <text>; lines are split at '\n' and
+// never wrapped. Its fill rule is nonzero, as fonts are drawn.
+export interface Text extends Painted {
+  type: 'text';
+  text: string;
+  x: number;
+  y: number;
+  font: string;
+  // The em size, in the text's own units.
+  size: number;
+  // From one baseline to the next, in ems.
+  lineHeight: number;
+  // Added between characters, in the text's own units.
+  letterSpacing: number;
+  align: TextAlign;
+}
+
+export type Shape = Rect | Ellipse | Line | Path | Text;
 export type Node = Group | Shape;
 export type NodeType = Node['type'];
 

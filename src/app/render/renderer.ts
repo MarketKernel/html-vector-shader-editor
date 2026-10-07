@@ -11,7 +11,7 @@
 //                                                  (alpha kept), then ONE_MINUS_DST_ALPHA, ONE
 // so no copy of the backdrop is needed.
 //
-// Nothing here knows about documents: a renderer for WebGPU would take the same list.
+// Nothing here knows about documents: the WebGPU renderer (webgpu.ts) takes the same list.
 
 import type { DrawItem, DrawList, GroupItem, ShapeItem } from '../../core/draw';
 import { isolated } from '../../core/draw';
@@ -51,8 +51,7 @@ uniform vec4 uStroke;
 uniform float uHalfWidth;
 uniform int uStyle;
 uniform float uAA;
-uniform ivec4 uPath;
-uniform ivec2 uDiscs;
+uniform ivec2 uPath;
 uniform float uOpacity;
 out vec4 fragColor;
 void main() {
@@ -60,7 +59,7 @@ void main() {
   if (uKind == 0) c = paintRect(vLocal, uA, uB.x, uFill, uStroke, uHalfWidth, uStyle, uAA);
   else if (uKind == 1) c = paintEllipse(vLocal, uA.xy, uA.zw, uFill, uStroke, uHalfWidth, uAA);
   else if (uKind == 2) c = paintLine(vLocal, uA.xy, uA.zw, uStroke, uHalfWidth, uStyle, uAA);
-  else c = paintPath(vLocal, uPath.x, uPath.y, uPath.z, uPath.w, uDiscs.x, uDiscs.y, uStyle == 1, uFill, uStroke, uAA);
+  else c = paintPath(vLocal, uPath.x, uPath.y, uStyle == 1, uFill, uStroke, uAA);
   fragColor = c * uOpacity;
 }`;
 
@@ -154,6 +153,18 @@ export function unitQuad(gl: WebGL2RenderingContext): WebGLVertexArrayObject {
   return vao;
 }
 
+export type Backend = 'webgpu' | 'webgl2';
+
+// What the view needs of a renderer, WebGL's or WebGPU's.
+export interface ViewRenderer {
+  readonly kind: Backend;
+  readonly maxSize: number;
+  renderView(list: DrawList, view: Matrix, width: number, height: number, pasteboard: Pasteboard): void;
+  // Resolves once the GPU has done what it was given (the tests time frames by it).
+  finish(): Promise<void>;
+  dispose(): void;
+}
+
 export interface Pasteboard {
   // Premultiplied, 0…1.
   clear: [number, number, number, number];
@@ -161,7 +172,8 @@ export interface Pasteboard {
   checkerDark: [number, number, number, number];
 }
 
-export class Renderer {
+export class Renderer implements ViewRenderer {
+  readonly kind = 'webgl2';
   readonly gl: WebGL2RenderingContext;
   private shape: Program;
   private composite: Program;
@@ -175,12 +187,12 @@ export class Renderer {
   private inUse = 0;
   private size = { width: 1, height: 1 };
   private view: Matrix = [1, 0, 0, 1, 0, 0];
-  private offsets = new Map<ShapeItem, [number, number, number]>();
+  private offsets = new Map<ShapeItem, number>();
   readonly maxSize: number;
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
-    this.shape = program(gl, SHAPE_VS, SHAPE_FS, ['uBox', 'uMatrix', 'uSize', 'uData', 'uKind', 'uA', 'uB', 'uFill', 'uStroke', 'uHalfWidth', 'uStyle', 'uAA', 'uPath', 'uDiscs', 'uOpacity']);
+    this.shape = program(gl, SHAPE_VS, SHAPE_FS, ['uBox', 'uMatrix', 'uSize', 'uData', 'uKind', 'uA', 'uB', 'uFill', 'uStroke', 'uHalfWidth', 'uStyle', 'uAA', 'uPath', 'uOpacity']);
     this.composite = program(gl, FULL_VS, COMPOSITE_FS, ['uTexture', 'uOpacity']);
     this.checker = program(gl, FULL_VS, CHECKER_FS, ['uRect', 'uLight', 'uDark', 'uCell', 'uHeight']);
     this.quad = unitQuad(gl);
@@ -302,6 +314,11 @@ export class Renderer {
     return out;
   }
 
+  finish(): Promise<void> {
+    this.gl.readPixels(0, 0, 1, 1, this.gl.RGBA, this.gl.UNSIGNED_BYTE, new Uint8Array(4));
+    return Promise.resolve();
+  }
+
   dispose(): void {
     for (const t of this.pool) this.release(t);
     this.pool = [];
@@ -376,13 +393,8 @@ export class Renderer {
     gl.bindTexture(gl.TEXTURE_2D, this.data);
     gl.uniform1i(u.uData!, 0);
     const at = this.offsets.get(s);
-    if (s.path && at) {
-      gl.uniform4i(u.uPath!, at[0], s.path.segs.length / 4, at[1], s.path.quads.length / 8);
-      gl.uniform2i(u.uDiscs!, at[2], s.path.discs.length / 4);
-    } else {
-      gl.uniform4i(u.uPath!, 0, 0, 0, 0);
-      gl.uniform2i(u.uDiscs!, 0, 0);
-    }
+    if (s.path && at !== undefined) gl.uniform2i(u.uPath!, at, s.path.chunks);
+    else gl.uniform2i(u.uPath!, 0, 0);
     this.drawQuad();
   }
 
@@ -426,10 +438,9 @@ export class Renderer {
       for (const it of items) {
         if (it.kind === 'group') visit(it.items);
         else if (it.path) {
-          const g = it.path;
-          this.offsets.set(it, [texels, texels + g.segs.length / 4, texels + g.segs.length / 4 + g.quads.length / 4]);
-          chunks.push(g.segs, g.quads, g.discs);
-          texels += (g.segs.length + g.quads.length + g.discs.length) / 4;
+          this.offsets.set(it, texels);
+          chunks.push(it.path.packed);
+          texels += it.path.packed.length / 4;
         }
       }
     };

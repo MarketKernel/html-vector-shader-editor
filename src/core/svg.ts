@@ -1,8 +1,10 @@
 // SVG export: one element per node, only the attributes that differ from SVG's defaults,
 // numbers rounded to a thousandth (matrix coefficients to a millionth, as they multiply
 // whole coordinates). Hidden layers and nodes are left out: they are not in the picture.
+// A text becomes the path of its glyphs, so it looks the same without its font.
 
 import { isIdentity } from './matrix';
+import { cachedLayout, textSegments } from './text';
 import type { Document, Fill, Group, Layer, Matrix, Node, Segment, Shape, Stroke } from './types';
 
 export interface ExportResult {
@@ -22,7 +24,7 @@ const fmtScale = (n: number): string => {
   return Object.is(r, -0) ? '0' : String(r);
 };
 
-const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/\n/g, '&#10;');
 
 export function pathData(segments: Segment[]): string {
   return segments.map((s) => s[0] + (s.slice(1) as number[]).map(fmt).join(' ')).join('');
@@ -68,6 +70,9 @@ function shapeElement(s: Shape): string {
       const rule = s.fillRule === 'evenodd' ? ' fill-rule="evenodd"' : '';
       return `<path d="${pathData(s.segments)}"${rule}${paintAttrs(s.fill, s.stroke, true)}${common}/>`;
     }
+    case 'text':
+      // The words stay readable to screen readers and searches.
+      return `<path d="${pathData(textSegments(cachedLayout(s)))}" aria-label="${esc(s.text)}"${paintAttrs(s.fill, s.stroke, true)}${common}/>`;
   }
 }
 
@@ -109,6 +114,11 @@ export function exportSvg(doc: Document): ExportResult {
   if (doc.background) out.push(`  <rect width="${w}" height="${h}" fill="${doc.background}"/>`);
   for (const l of doc.layers) if (l.visible) layerLines(l, out);
   out.push('</svg>');
-  // Everything in the model has an SVG equivalent; nothing is approximated.
-  return { text: `${out.join('\n')}\n`, warnings: [] };
+  // Everything in the model has an SVG equivalent; nothing is approximated. Texts are
+  // drawn exactly, but as shapes: that is worth saying.
+  const warnings: string[] = [];
+  const texts = (nodes: Node[]): number => nodes.reduce((n, c) => n + (!c.visible ? 0 : c.type === 'text' ? 1 : c.type === 'group' ? texts(c.children) : 0), 0);
+  const count = doc.layers.reduce((n, l) => n + (l.visible ? texts(l.children) : 0), 0);
+  if (count) warnings.push(`${count === 1 ? 'A text is' : `${count} texts are`} written as glyph outlines (<path>): the picture is exact and needs no font, but the words can no longer be edited as text.`);
+  return { text: `${out.join('\n')}\n`, warnings };
 }

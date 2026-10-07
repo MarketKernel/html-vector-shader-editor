@@ -10,7 +10,8 @@ import type { Box } from './matrix';
 import { identity, invert, meanScale, multiply, transformBox } from './matrix';
 import type { BlendMode, Document, Matrix, Node, Shape } from './types';
 
-export const KIND = { rect: 0, ellipse: 1, line: 2, path: 3 } as const;
+// A text is drawn as the path of its glyphs.
+export const KIND = { rect: 0, ellipse: 1, line: 2, path: 3, text: 3 } as const;
 export const JOIN = { miter: 0, round: 1, bevel: 2 } as const;
 export const CAP = { butt: 0, round: 1, square: 2 } as const;
 
@@ -34,7 +35,7 @@ export interface ShapeItem {
   fill: Vec4;
   stroke: Vec4;
   halfWidth: number;
-  // The join for a rectangle, the cap for a line, 1 for an even-odd path.
+  // The join for a rectangle, the cap for a line, 1 for an even-odd path (never a text).
   style: number;
   opacity: number;
   path: PathGeometry | null;
@@ -149,9 +150,12 @@ export function shapeItem(s: Shape, world: Matrix, o: DrawOptions): ShapeItem | 
       local = paintedBounds(s);
       break;
     case 'path':
+    case 'text':
       path = cachedPathGeometry(s, snapTolerance(o.tolerance / (scale * o.scale)));
-      style = s.fillRule === 'evenodd' ? 1 : 0;
+      style = s.type === 'path' && s.fillRule === 'evenodd' ? 1 : 0;
       local = stroke[3] > 0 ? path.bounds : path.fillBounds;
+      // Spaces only: nothing to draw.
+      if (s.type === 'text' && !path.chunks) return null;
       if (local.width < 0) local = geometryBounds(s);
       break;
   }

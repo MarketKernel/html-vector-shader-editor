@@ -1,13 +1,14 @@
 /**
- * GLSL export: the shader's structure (version, the one uniform, a function per layer and
- * group, blends in main), the geometry as constants, and the float literals GLSL needs.
- * The browser tests compile it and compare its picture with the PNG export.
+ * Shader exports — GLSL, Shadertoy, WGSL: the shader's structure (version, the one
+ * uniform, a function per layer and group, blends in main), the geometry as constants,
+ * and the float literals GLSL needs. The browser tests compile them and compare their
+ * pictures with the PNG export.
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { checker, load, root } from '../tools/load.mjs';
 
-const c = await load('core/glsl.ts', 'core/serialize.ts', 'core/shapes.ts', 'core/document.ts', 'core/sdf.ts');
+const c = await load('core/glsl.ts', 'core/wgsl.ts', 'core/serialize.ts', 'core/shapes.ts', 'core/document.ts', 'core/sdf.ts');
 const { check, ok, done } = checker();
 
 check('float literals', ['1.0', '-0.5', '0.0', '1.0e-7', '1234568.0', '0.3333333'], [c.glf(1), c.glf(-0.5), c.glf(-0), c.glf(1e-7), c.glf(1234567.89), c.glf(1 / 3)]);
@@ -40,11 +41,11 @@ ok('a round-capped line', text.includes('paintLine(q, vec2(20.0, 300.0), vec2(23
 const dataSize = Number(/const vec4 DATA\[(\d+)\]/.exec(text)[1]);
 const entries = text.slice(text.indexOf('const vec4 DATA'), text.indexOf(');', text.indexOf('const vec4 DATA'))).match(/vec4\(/g).length;
 check('the data array holds what it declares', entries, dataSize);
-const ring = /paintPath\(q, (\d+), (\d+), (\d+), (\d+), (\d+), (\d+), (true|false)/.exec(text);
-check('the ring: even-odd, edges first', [ring[1], ring[7]], ['0', 'true']);
-ok('the ring’s edges, then its stroke quads and joins', Number(ring[3]) === Number(ring[2]) && Number(ring[5]) === Number(ring[3]) + 2 * Number(ring[4]) && Number(ring[6]) > 0);
-ok('the zigzag’s bevel stroke has no discs', /paintPath\(q, \d+, 4, \d+, 5, \d+, 0, false/.test(text));
-ok('the first edge of the ring starts at its first point', text.includes('vec4(250.0, 150.0,'));
+const ring = /paintPath\(q, (\d+), (\d+), (true|false)/.exec(text);
+check('the ring: from the start of the data, two chunks (outline and hole), even-odd', [ring[1], ring[2], ring[3]], ['0', '2', 'true']);
+ok('a chunk starts with its box and its counts', /const vec4 DATA\[\d+\] = vec4\[\d+\]\(\n {2}vec4\(248\.5, 111\.0, 441\.5, 271\.5\),\n {2}vec4\(58\.0, 58\.0, 58\.0, 0\.0\),\n {2}vec4\(250\.0, 150\.0,/.test(text));
+ok('the zigzag: one chunk, not even-odd', /paintPath\(q, \d+, 1, false/.test(text));
+ok('its counts: four edges, three segment quads and two bevels, no discs', text.includes('vec4(4.0, 5.0, 0.0, 0.0)'));
 check('nothing to warn about', warnings, []);
 
 // An empty document still compiles: the data array cannot be empty.
@@ -77,6 +78,24 @@ check('warns about a lost dot', c.exportGlsl(dotted).warnings.length, 1);
   const shift = wrapped.split('\n').findIndex((l) => l.startsWith('// "Showcase"'));
   check('compiler lines point into the pasted text', c.shadertoyLog(`ERROR: 0:${shift + 3}: oops`), 'ERROR: 0:3: oops');
   ok('and calls mainImage', wrapped.includes('mainImage(shadertoyColor, gl_FragCoord.xy);') && wrapped.includes('#define iResolution vec3(uResolution, 1.0)'));
+}
+
+// WGSL: the same structure and numbers, spelled for WebGPU, with its entry points.
+{
+  const { text: w, warnings: ww } = c.exportWgsl(doc, 'Showcase');
+  ok('no #version, a header saying how to run it', !w.includes('#version') && w.startsWith('// "Showcase"') && w.includes('// To run with WebGPU'));
+  ok('the viewport size in a uniform at group 0, binding 0', w.includes('@group(0) @binding(0) var<uniform> viewport: Viewport;') && (w.match(/^@group/gm) ?? []).length === 1);
+  ok('vertex and fragment entry points', /@vertex\nfn vs_main\(@builtin\(vertex_index\) i: u32\) -> @builtin\(position\) vec4f \{/.test(w) && /@fragment\nfn fs_main\(@builtin\(position\) frag: vec4f\) -> @location\(0\) vec4f \{/.test(w));
+  ok('the WGSL library is in it', w.includes(c.SDF_LIBRARY_WGSL.trim()));
+  check('a function per layer', [...w.matchAll(/^fn (layer\d+)\(p: vec2f, px: f32\) -> vec4f \{/gm)].map((m) => m[1]), ['layer0', 'layer1', 'layer2']);
+  ok('composited as in GLSL', w.includes('  c = blendMultiply(c, layer1(p, px) * 0.9);') && w.includes('c = blendNormal(c, group0(p, px) * 0.6);'));
+  ok('the same rect, in WGSL types', w.includes('paintRect(q, vec4f(20.0, 20.0, 200.0, 120.0), 16.0, vec4f(0.3098039, 0.5568627, 0.9686275, 1.0), vec4f(0.1137255, 0.1411765, 0.2, 1.0), 2.0, 0, px * 1.0)'));
+  ok('the inverse matrix as mat2x2f', w.includes('let q = mat2x2f(0.9396927, -0.3420201, 0.3420201, 0.9396927) * p + vec2f(-295.5886, 65.01833);'));
+  const n = Number(/const DATA = array<vec4f, (\d+)>/.exec(w)[1]);
+  check('the very same path data as the GLSL', n, dataSize);
+  ok('antialiasing from fwidth, in the fragment entry point', /fn fs_main[\s\S]*fwidth\(p\)/.test(w));
+  check('the same warnings', ww, warnings);
+  ok('an empty document still has a data array', c.exportWgsl(c.createDocument(10, 10, null)).text.includes('const DATA = array<vec4f, 1>(\n  vec4f(0.0)\n);'));
 }
 
 done('glsl');

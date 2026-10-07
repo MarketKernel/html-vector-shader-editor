@@ -1,7 +1,8 @@
 // New shapes, with the style the tools draw with.
 
 import { uid } from './document';
-import type { Ellipse, Fill, Group, Line, Node, Path, Rect, Segment, Stroke } from './types';
+import { BUILTIN_FONT } from './fonts';
+import type { Ellipse, Fill, Group, Line, Node, Path, Rect, Segment, Stroke, Text, TextAlign } from './types';
 
 export interface Style {
   fill: Fill;
@@ -33,6 +34,23 @@ export function makeLine(x1: number, y1: number, x2: number, y2: number, style: 
 
 export function makePath(segments: Segment[], style: Style = DEFAULT_STYLE, id = uid('p')): Path {
   return { ...base(id), type: 'path', ...copyStyle(style), segments, fillRule: 'nonzero' };
+}
+
+// How new texts are set.
+export interface TextStyle {
+  font: string;
+  size: number;
+  lineHeight: number;
+  letterSpacing: number;
+  align: TextAlign;
+}
+
+export const DEFAULT_TEXT: TextStyle = { font: BUILTIN_FONT, size: 32, lineHeight: 1.2, letterSpacing: 0, align: 'start' };
+
+// A text takes the fill of the style and no stroke: an outline around letters is rarely
+// what is wanted, and with no fill in the style it gets a dark one, or it would not show.
+export function makeText(text: string, x: number, y: number, style: Style = DEFAULT_STYLE, setting: TextStyle = DEFAULT_TEXT, id = uid('t')): Text {
+  return { ...base(id), type: 'text', fill: { ...(style.fill ?? { color: '#1d2433', opacity: 1 }) }, stroke: null, text, x, y, ...setting };
 }
 
 export function makeGroup(children: Node[], id = uid('g')): Group {

@@ -10,11 +10,14 @@
 import { transformNodes } from '../../core/actions';
 import { normalizeHex } from '../../core/color';
 import { locate, walkNodes } from '../../core/document';
+import { availableFonts, fontFace } from '../../core/fonts';
 import { around, decompose, invert, multiplyAll, rotate, scale, translate } from '../../core/matrix';
 import { nodeChange, updateDocument, updateNodes } from '../../core/ops';
-import type { BlendMode, FillRule, Matrix, LineCap, LineJoin, Node, Shape, SolidFill, SolidStroke } from '../../core/types';
+import type { TextStyle } from '../../core/shapes';
+import type { BlendMode, FillRule, Matrix, LineCap, LineJoin, Node, Shape, SolidFill, SolidStroke, Text, TextAlign } from '../../core/types';
 import { app } from '../app';
 import { setLayer } from '../edit';
+import { loadFont } from '../io';
 import { frameMetrics, selectionFrame } from '../selection';
 import { esc } from './dialog';
 
@@ -50,6 +53,12 @@ const JOIN_LABELS: [LineJoin, string][] = [
   ['round', 'Круглый'],
   ['bevel', 'Срезанный'],
 ];
+const ALIGN_LABELS: [TextAlign, string][] = [
+  ['start', 'Влево'],
+  ['middle', 'По центру'],
+  ['end', 'Вправо'],
+];
+const LOAD_FONT = '\u0000load';
 const RULE_LABELS: [FillRule, string][] = [
   ['nonzero', 'Ненулевое (nonzero)'],
   ['evenodd', 'Чётно-нечётное (evenodd)'],
@@ -146,6 +155,43 @@ function strokeFields(shapes: () => Shape[], target: 'selection' | 'style'): Fie
   ];
 }
 
+// The fonts to choose from: the built-in one, the document's, whatever is in use already.
+function fontOptions(inUse: (string | null)[]): [string, string][] {
+  const faces = availableFonts(app.doc);
+  for (const id of inUse) {
+    const face = id ? fontFace(id) : null;
+    if (face && !faces.some((f) => f.id === face.id)) faces.push(face);
+  }
+  return [...faces.map((f): [string, string] => [f.id, `${f.family} ${f.style}`.trim()]), [LOAD_FONT, 'Загрузить шрифт…']];
+}
+
+function textFields(texts: () => Text[], target: 'selection' | 'style'): Field[] {
+  const settings = (): TextStyle[] => (target === 'style' ? [app.textStyle] : texts());
+  const set = (values: Partial<TextStyle>, what: string) => {
+    if (target === 'style') return app.setTextStyle({ ...app.textStyle, ...values });
+    patchShapes(texts(), () => values, 'Текст', false, what);
+  };
+  const positive = (v: Value) => Math.max(0.01, Number(v));
+  return [
+    {
+      kind: 'select',
+      label: 'Гарнитура',
+      wide: true,
+      options: fontOptions(settings().map((s) => s.font)),
+      get: () => common(settings(), (s) => s.font),
+      set: (v) => {
+        // Loading one applies it once it is read; the list is rebuilt then.
+        if (v === LOAD_FONT) void loadFont().finally(() => app.emit('style'));
+        else set({ font: String(v) }, 'font');
+      },
+    },
+    { kind: 'number', label: 'Размер', min: 0.01, unit: 'px', get: () => common(settings(), (s) => s.size), set: (v) => set({ size: positive(v) }, 'size') },
+    { kind: 'number', label: 'Интерлиньяж', min: 0.01, step: 0.05, unit: '×', get: () => common(settings(), (s) => s.lineHeight), set: (v) => set({ lineHeight: positive(v) }, 'line-height') },
+    { kind: 'number', label: 'Разрядка', step: 0.1, unit: 'px', get: () => common(settings(), (s) => s.letterSpacing), set: (v) => set({ letterSpacing: Number(v) }, 'letter-spacing') },
+    { kind: 'select', label: 'Выравнивание', options: ALIGN_LABELS, get: () => common(settings(), (s) => s.align), set: (v) => set({ align: v as TextAlign }, 'align') },
+  ];
+}
+
 function selectionSections(): Section[] {
   const nodes = selectedNodes();
   const sections: Section[] = [];
@@ -197,8 +243,10 @@ function selectionSections(): Section[] {
       },
     });
   }
-  const label = one ? `${{ rect: 'Прямоугольник', ellipse: one.type === 'ellipse' && one.rx === one.ry ? 'Круг' : 'Эллипс', line: 'Линия', path: 'Контур', group: 'Группа' }[one.type]}` : `Объекты: ${nodes.length}`;
+  const label = one ? `${{ rect: 'Прямоугольник', ellipse: one.type === 'ellipse' && one.rx === one.ry ? 'Круг' : 'Эллипс', line: 'Линия', path: 'Контур', text: 'Текст', group: 'Группа' }[one.type]}` : `Объекты: ${nodes.length}`;
   sections.push({ title: label, fields: head });
+  const texts = () => selectedShapes().filter((s): s is Text => s.type === 'text');
+  if (texts().length) sections.push({ title: 'Шрифт', fields: textFields(texts, 'selection') });
   if (filled().length) sections.push({ title: 'Заливка', fields: fillFields(filled, 'selection') });
   if (selectedShapes().length) sections.push({ title: 'Обводка', fields: strokeFields(selectedShapes, 'selection') });
   const paths = () => selectedShapes().filter((s) => s.type === 'path');
@@ -221,6 +269,7 @@ function documentSections(): Section[] {
         { kind: 'color', label: 'Цвет фона', get: () => app.doc.background, set: (v, live) => app.apply(updateDocument(app.doc, { background: String(v) }, 'Фон'), live ? { key: liveKey('bg') } : {}) },
       ],
     },
+    ...(app.tool?.id === 'text' ? [{ title: 'Шрифт нового текста', fields: textFields(() => [], 'style') }] : []),
     { title: 'Заливка новых фигур', fields: fillFields(() => [], 'style') },
     { title: 'Обводка новых фигур', fields: strokeFields(() => [], 'style') },
   ];
@@ -307,7 +356,15 @@ export function mountProperties(root: HTMLElement): void {
   };
 
   const refresh = () => {
-    const sig = [app.selection.join(','), app.activeLayer, app.selection.map((id) => locate(app.doc, id)?.node.type).join(','), app.selection.length ? '' : 'doc'].join('|');
+    const sig = [
+      app.selection.join(','),
+      app.activeLayer,
+      app.selection.map((id) => locate(app.doc, id)?.node.type).join(','),
+      app.selection.length ? '' : `doc:${app.tool?.id === 'text'}`,
+      // The font list.
+      app.doc.fonts.map((f) => f.id).join(','),
+      app.textStyle.font,
+    ].join('|');
     if (sig !== signature) {
       signature = sig;
       build();
@@ -361,5 +418,7 @@ export function mountProperties(root: HTMLElement): void {
   app.on('change', refresh);
   app.on('selection', refresh);
   app.on('style', refresh);
+  app.on('tool', refresh);
+  app.on('file', refresh);
   build();
 }

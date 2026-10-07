@@ -16,7 +16,7 @@ export function createLayer(name: string, id = uid('layer-')): Layer {
 }
 
 export function createDocument(width: number, height: number, background: string | null, layerName = 'Layer 1'): Document {
-  return { version: DOCUMENT_VERSION, width, height, background, layers: [createLayer(layerName)] };
+  return { version: DOCUMENT_VERSION, width, height, background, layers: [createLayer(layerName)], fonts: [] };
 }
 
 export interface Location {

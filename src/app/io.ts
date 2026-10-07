@@ -3,10 +3,13 @@
 // downloads. A dropped file opens. The document is also kept in IndexedDB as it changes,
 // and offered back at the next start.
 
-import { createDocument } from '../core/document';
-import { updateDocument } from '../core/ops';
+import { createDocument, locate, walkNodes } from '../core/document';
+import { FontError } from '../core/font';
+import { faceFromFile, isBuiltinFont } from '../core/fonts';
+import type { Op } from '../core/ops';
+import { addFonts, batch, nodeChange, updateDocument, updateNodes } from '../core/ops';
 import { FILE_EXTENSION, parseDocument, serialize } from '../core/serialize';
-import type { Document } from '../core/types';
+import type { Document, FontFace, Text } from '../core/types';
 import { app } from './app';
 import { ask, form, inform, toast } from './ui/dialog';
 
@@ -105,10 +108,65 @@ export async function open(): Promise<void> {
 }
 
 export async function openDropped(files: File[]): Promise<void> {
+  // Fonts dropped are loaded, as by File → Load font.
+  const fonts = files.filter((f) => FONT_FILE.test(f.name));
+  for (const f of fonts) {
+    const face = await readFontFile(f);
+    if (face) useFont(face);
+  }
+  if (fonts.length) return;
   const file = files.find((f) => /\.json$/i.test(f.name)) ?? files[0];
   if (!file) return;
   if (!(await confirmDiscard())) return;
   openText(await file.text(), file.name);
+}
+
+// ---- Fonts
+
+const FONT_FILE = /\.(ttf|otf|ttc)$/i;
+
+export async function readFontFile(file: File): Promise<FontFace | null> {
+  try {
+    return faceFromFile(new Uint8Array(await file.arrayBuffer()));
+  } catch (error) {
+    if (!(error instanceof FontError)) throw error;
+    void inform('Не удалось загрузить шрифт', `${file.name}: ${error.message}`);
+    return null;
+  }
+}
+
+function chooseFontFile(): Promise<FontFace | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.ttf,.otf,.ttc,font/ttf,font/otf,font/collection';
+    input.addEventListener('change', async () => {
+      const file = input.files?.[0];
+      resolve(file ? await readFontFile(file) : null);
+    });
+    input.addEventListener('cancel', () => resolve(null));
+    input.click();
+  });
+}
+
+// Texts in the selection, groups opened up.
+const selectedTexts = (): Text[] => [...walkNodes(app.selection.map((id) => locate(app.doc, id)?.node).filter((n) => !!n))].filter((n): n is Text => n.type === 'text');
+
+// A font for the selected texts, or for new ones when no text is selected; the document
+// carries it from now on.
+export function useFont(face: FontFace): void {
+  const ops: Op[] = [];
+  if (!isBuiltinFont(face.id) && !app.doc.fonts.some((f) => f.id === face.id)) ops.push(addFonts([face], 'Шрифт'));
+  const texts = selectedTexts();
+  if (texts.length) ops.push(updateNodes(texts.map((t) => nodeChange(t, { font: face.id }))));
+  else app.setTextStyle({ ...app.textStyle, font: face.id });
+  if (ops.length) app.apply(batch('Шрифт', ops));
+  toast(`Шрифт: ${face.family} ${face.style}`);
+}
+
+export async function loadFont(): Promise<void> {
+  const face = await chooseFontFile();
+  if (face) useFont(face);
 }
 
 export function download(blob: Blob, name: string): void {

@@ -4,7 +4,8 @@
 
 import { transformValues } from '../../core/actions';
 import { findContainer } from '../../core/document';
-import { insertNode } from '../../core/ops';
+import type { Op } from '../../core/ops';
+import { batch, insertNode } from '../../core/ops';
 import { makeEllipse, makeLine, makeRect } from '../../core/shapes';
 import type { Node } from '../../core/types';
 import { app } from '../app';
@@ -40,12 +41,14 @@ export function canDraw(): boolean {
   return true;
 }
 
-// The node drawn in document coordinates, placed into the entered group's coordinates.
-export function commitShape(node: Node, label: string): void {
+// The node drawn in document coordinates, placed into the entered group's coordinates;
+// `before`: ops of the same step that it needs (a font for a text).
+export function commitShape(node: Node, label: string, before: Op[] = []): void {
   const { parentId, inverse } = app.insertTarget();
   const placed = { ...node, ...transformValues(node, [1, 0, 0, 1, 0, 0], inverse) } as Node;
   const parent = findContainer(app.doc, parentId)!;
-  app.apply(insertNode(parentId, parent.children.length, placed, label), { selection: [placed.id] });
+  const insert = insertNode(parentId, parent.children.length, placed, label);
+  app.apply(before.length ? batch(label, [...before, insert]) : insert, { selection: [placed.id] });
 }
 
 function dragTool(def: Omit<Tool, 'down' | 'move' | 'up' | 'cancel' | 'cursor'>, make: Make, label: string): Tool {

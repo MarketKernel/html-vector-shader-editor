@@ -20,7 +20,7 @@ ok('segments one per line', c.serialize(doc).includes('["C", 290, 100, 380, 100,
 
 // Version 0: no version field, layers without blend, fills as bare colours.
 const old = c.parseDocument(JSON.stringify({ width: 10, height: 10, background: '#FFF', layers: [{ id: 'a', name: 'A', children: [{ id: 'r', type: 'rect', x: 0, y: 0, width: 5, height: 5, fill: '#F00' }] }] }));
-check('migrated to version 1', old.version, 1);
+check('migrated to the current version', old.version, 2);
 check('layer gets a blend', old.layers[0].blend, 'normal');
 check('fill becomes an object', old.layers[0].children[0].fill, { color: '#ff0000', opacity: 1 });
 check('short colours expanded', old.background, '#ffffff');

@@ -1,0 +1,120 @@
+{
+  "version": 2,
+  "width": 400,
+  "height": 260,
+  "background": "#fbfaf7",
+  "layers": [
+    {
+      "id": "words",
+      "name": "Words",
+      "visible": true,
+      "locked": false,
+      "opacity": 1,
+      "blend": "normal",
+      "children": [
+        {
+          "id": "title",
+          "name": "Title",
+          "visible": true,
+          "locked": false,
+          "opacity": 1,
+          "transform": [1, 0, 0, 1, 0, 0],
+          "type": "text",
+          "fill": {
+            "color": "#1d2433",
+            "opacity": 1
+          },
+          "stroke": null,
+          "text": "Привет, AVATAR!",
+          "x": 20,
+          "y": 52,
+          "font": "inter",
+          "size": 36,
+          "lineHeight": 1.2,
+          "letterSpacing": 0,
+          "align": "start"
+        },
+        {
+          "id": "lines",
+          "name": "Two lines",
+          "visible": true,
+          "locked": false,
+          "opacity": 1,
+          "transform": [1, 0, 0, 1, 0, 0],
+          "type": "text",
+          "fill": {
+            "color": "#2f6df6",
+            "opacity": 0.85
+          },
+          "stroke": null,
+          "text": "Ёжик в тумане\nвыравнен по центру",
+          "x": 200,
+          "y": 100,
+          "font": "inter",
+          "size": 22,
+          "lineHeight": 1.3,
+          "letterSpacing": 1.5,
+          "align": "middle"
+        },
+        {
+          "id": "outlined",
+          "name": "Outlined",
+          "visible": true,
+          "locked": false,
+          "opacity": 1,
+          "transform": [0.9659258, -0.258819, 0.258819, 0.9659258, 30, 225],
+          "type": "text",
+          "fill": {
+            "color": "#ffd23f",
+            "opacity": 1
+          },
+          "stroke": {
+            "color": "#7a2e00",
+            "opacity": 1,
+            "width": 2,
+            "cap": "butt",
+            "join": "round"
+          },
+          "text": "Обводка",
+          "x": 0,
+          "y": 0,
+          "font": "inter",
+          "size": 40,
+          "lineHeight": 1.2,
+          "letterSpacing": 0,
+          "align": "start"
+        },
+        {
+          "id": "cff",
+          "name": "CFF font",
+          "visible": true,
+          "locked": false,
+          "opacity": 1,
+          "transform": [1, 0, 0, 1, 0, 0],
+          "type": "text",
+          "fill": {
+            "color": "#8e4ec6",
+            "opacity": 1
+          },
+          "stroke": null,
+          "text": "AVo, Ёa",
+          "x": 380,
+          "y": 230,
+          "font": "font-096f1ab40092b691",
+          "size": 44,
+          "lineHeight": 1.2,
+          "letterSpacing": -1,
+          "align": "end"
+        }
+      ]
+    }
+  ],
+  "fonts": [
+    {
+      "id": "font-096f1ab40092b691",
+      "family": "Inter CFF Test",
+      "style": "Regular",
+      "data": "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"
+    }
+  ]
+}

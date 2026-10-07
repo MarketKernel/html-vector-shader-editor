@@ -4,7 +4,8 @@
 // object identity (the renderer's flattened paths) goes stale by itself.
 
 import { findContainer, locate } from './document';
-import type { Container, Document, Layer, Node } from './types';
+import { registerFont } from './fonts';
+import type { Container, Document, FontFace, Layer, Node } from './types';
 
 export interface Op {
   label: string;
@@ -181,6 +182,19 @@ export function updateDocument(doc: Document, values: Partial<DocumentProps>, la
     label,
     apply: (d) => void Object.assign(d, values),
     revert: (d) => void Object.assign(d, before),
+  };
+}
+
+// Fonts the document carries from now on.
+export function addFonts(faces: FontFace[], label = 'Add font'): Op {
+  const ids = new Set(faces.map((f) => f.id));
+  return {
+    label,
+    apply: (doc) => {
+      faces.forEach(registerFont);
+      doc.fonts.push(...faces);
+    },
+    revert: (doc) => void (doc.fonts = doc.fonts.filter((f) => !ids.has(f.id))),
   };
 }
 

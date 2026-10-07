@@ -19,11 +19,12 @@ export function mountToolbox(root: HTMLElement): void {
 }
 
 export function mountStatus(root: HTMLElement): void {
-  root.innerHTML = `<span class="status-hint"></span><span class="status-cursor"></span><span class="status-selection"></span><span class="status-zoom"></span>`;
+  root.innerHTML = `<span class="status-hint"></span><span class="status-cursor"></span><span class="status-selection"></span><span class="status-renderer"></span><span class="status-zoom"></span>`;
   const hint = root.querySelector<HTMLElement>('.status-hint')!;
   const cursor = root.querySelector<HTMLElement>('.status-cursor')!;
   const selection = root.querySelector<HTMLElement>('.status-selection')!;
   const zoom = root.querySelector<HTMLElement>('.status-zoom')!;
+  const renderer = root.querySelector<HTMLElement>('.status-renderer')!;
   const r = (v: number) => (Math.round(v * 10) / 10).toString();
   const sync = () => {
     hint.textContent = app.tool.hint;
@@ -32,6 +33,8 @@ export function mountStatus(root: HTMLElement): void {
     const n = app.selection.length;
     selection.textContent = n ? `Выделено: ${n}` : '';
     zoom.textContent = `${app.view ? Math.round(app.view.zoom * 1000) / 10 : 100} %`;
+    const kind = app.view?.renderer?.kind;
+    renderer.textContent = kind === 'webgpu' ? 'WebGPU' : kind === 'webgl2' ? 'WebGL 2' : '';
   };
   app.on('tool', sync);
   app.on('view', sync);

@@ -3,9 +3,10 @@
 // selected after it; the caller runs the op through the history.
 
 import { allNodes, cloneLayer, cloneNode, containerMatrix, createLayer, locate, parentMatrix, uid } from './document';
+import { missingFonts } from './fonts';
 import { invert, multiply, multiplyAll } from './matrix';
 import type { Op } from './ops';
-import { batch, insertLayer, insertNode, moveLayer, moveNode, nodeChange, removeLayer, removeNode, sequence, updateNodes } from './ops';
+import { addFonts, batch, insertLayer, insertNode, moveLayer, moveNode, nodeChange, removeLayer, removeNode, sequence, updateNodes } from './ops';
 import type { Document, Group, Matrix, Node, Segment } from './types';
 
 export interface Edit {
@@ -45,9 +46,10 @@ function mapSegments(segments: Segment[], m: Matrix): Segment[] {
 
 // The new property values of a node moved by `delta` (in document space), given the
 // matrix of its parent. Where the change can be written into the geometry itself it is —
-// a path's points, a rectangle's sides when it is only scaled along its own axes — so
-// strokes keep their width; anything else (a rotation of a rectangle, any change to a
-// group) goes into the node's matrix.
+// a path's points, a rectangle's sides when it is only scaled along its own axes, a
+// text's place and size when it is moved or scaled the same both ways — so strokes keep
+// their width; anything else (a rotation of a rectangle or a text, any change to a group)
+// goes into the node's matrix.
 export function transformValues(node: Node, parent: Matrix, delta: Matrix): Record<string, unknown> {
   const world = multiply(parent, node.transform);
   const inv = invert(world);
@@ -78,6 +80,13 @@ export function transformValues(node: Node, parent: Matrix, delta: Matrix): Reco
       break;
     case 'ellipse':
       if (axisAligned) return { cx: L[0] * node.cx + L[4], cy: L[3] * node.cy + L[5], rx: Math.abs(L[0]) * node.rx, ry: Math.abs(L[3]) * node.ry };
+      break;
+    case 'text':
+      // Everything a text is set by scales with its size (line height is in ems).
+      if (axisAligned && L[0] > 0 && Math.abs(L[0] - L[3]) < EPS * Math.max(1, L[0])) {
+        const k = L[0];
+        return k === 1 ? { x: node.x + L[4], y: node.y + L[5] } : { x: k * node.x + L[4], y: k * node.y + L[5], size: k * node.size, letterSpacing: k * node.letterSpacing };
+      }
       break;
     case 'group':
       break;
@@ -224,6 +233,9 @@ export function pasteNodes(doc: Document, nodes: Node[], parentId: string): Edit
   const inv = invert(containerMatrix(doc, parentId)) ?? [1, 0, 0, 1, 0, 0];
   const selection: string[] = [];
   const op = sequence(doc, 'Paste', (run) => {
+    // Texts copied from another document bring their fonts.
+    const fonts = missingFonts(doc, nodes);
+    if (fonts.length) run(addFonts(fonts));
     for (const n of nodes) {
       const copy = cloneNode(n, true);
       copy.transform = multiply(inv, copy.transform);

@@ -3,8 +3,10 @@
 // a document it cannot draw; anything it cannot make sense of is an error, not a guess.
 
 import { normalizeHex } from './color';
-import type { BlendMode, Document, Fill, FillRule, Layer, LineCap, LineJoin, Matrix, Node, Segment, Stroke } from './types';
-import { BLEND_MODES, DOCUMENT_VERSION, LINE_CAPS, LINE_JOINS } from './types';
+import { FontError } from './font';
+import { BUILTIN_FONT, decodeBase64, faceFromFile, fontId, registerFont } from './fonts';
+import type { BlendMode, Document, Fill, FillRule, FontFace, Layer, LineCap, LineJoin, Matrix, Node, Segment, Stroke, TextAlign } from './types';
+import { BLEND_MODES, DOCUMENT_VERSION, LINE_CAPS, LINE_JOINS, TEXT_ALIGNS } from './types';
 
 export const FILE_EXTENSION = '.vector.json';
 
@@ -44,6 +46,8 @@ const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string
     version: 1,
     layers: (Array.isArray(raw.layers) ? raw.layers : []).map((l: Record<string, unknown>) => ({ blend: 'normal', ...l, children: upgradePaint0(l.children) })),
   }),
+  // Version 2 brought texts, and the fonts a document carries for them.
+  1: (raw) => ({ ...raw, version: 2, fonts: [] }),
 };
 
 function upgradePaint0(children: unknown): unknown {
@@ -79,7 +83,10 @@ export function readDocument(raw: unknown): Document {
   const height = positive(doc.height, 'document.height');
   const background = doc.background === null || doc.background === undefined ? null : color(doc.background, 'document.background');
   if (!Array.isArray(doc.layers)) fail('document.layers', 'not a list');
+  if (!Array.isArray(doc.fonts)) fail('document.fonts', 'not a list');
+  const fonts = (doc.fonts as unknown[]).map((f, i) => readFont(f, `fonts[${i}]`));
   const layers = (doc.layers as unknown[]).map((l, i) => readLayer(l, `layers[${i}]`));
+  const known = new Set([BUILTIN_FONT, ...fonts.map((f) => f.id)]);
   const ids = new Set<string>();
   const unique = (id: string, where: string) => {
     if (ids.has(id)) fail(where, `the id ${id} is used twice`);
@@ -89,12 +96,34 @@ export function readDocument(raw: unknown): Document {
     nodes.forEach((n, i) => {
       unique(n.id, `${where}[${i}]`);
       if (n.type === 'group') walk(n.children, `${where}[${i}].children`);
+      if (n.type === 'text' && !known.has(n.font)) fail(`${where}[${i}].font`, `no font ${n.font} in the document`);
     });
   layers.forEach((l, i) => {
     unique(l.id, `layers[${i}]`);
     walk(l.children, `layers[${i}].children`);
   });
-  return { version: DOCUMENT_VERSION, width, height, background, layers };
+  fonts.forEach(registerFont);
+  return { version: DOCUMENT_VERSION, width, height, background, layers, fonts };
+}
+
+// A font the document carries: it must read, and its id must be its contents' own.
+function readFont(raw: unknown, where: string): FontFace {
+  const f = obj(raw, where);
+  const id = str(f.id, `${where}.id`);
+  let bytes: Uint8Array;
+  try {
+    bytes = decodeBase64(str(f.data, `${where}.data`));
+  } catch {
+    return fail(`${where}.data`, 'not base64');
+  }
+  if (fontId(bytes) !== id) fail(`${where}.id`, `${id} is not the id of the font's data`);
+  try {
+    faceFromFile(bytes);
+  } catch (error) {
+    if (error instanceof FontError) fail(where, error.message);
+    throw error;
+  }
+  return { id, family: typeof f.family === 'string' ? f.family : '', style: typeof f.style === 'string' ? f.style : '', data: f.data as string };
 }
 
 function obj(v: unknown, where: string): Record<string, unknown> {
@@ -229,6 +258,21 @@ function readNode(raw: unknown, where: string): Node {
       return { ...base, type: 'line', ...paint, x1: num(n.x1, `${where}.x1`), y1: num(n.y1, `${where}.y1`), x2: num(n.x2, `${where}.x2`), y2: num(n.y2, `${where}.y2`) };
     case 'path':
       return { ...base, type: 'path', ...paint, segments: readSegments(n.segments, `${where}.segments`), fillRule: oneOf<FillRule>(n.fillRule, ['nonzero', 'evenodd'], `${where}.fillRule`, 'nonzero') };
+    case 'text':
+      if (typeof n.text !== 'string') fail(`${where}.text`, 'not a string');
+      return {
+        ...base,
+        type: 'text',
+        ...paint,
+        text: n.text as string,
+        x: num(n.x, `${where}.x`),
+        y: num(n.y, `${where}.y`),
+        font: str(n.font, `${where}.font`),
+        size: positive(n.size, `${where}.size`),
+        lineHeight: positive(n.lineHeight ?? 1.2, `${where}.lineHeight`),
+        letterSpacing: num(n.letterSpacing, `${where}.letterSpacing`, 0),
+        align: oneOf<TextAlign>(n.align, TEXT_ALIGNS, `${where}.align`, 'start'),
+      };
     default:
       return fail(`${where}.type`, `unknown node type ${JSON.stringify(n.type)}`);
   }
