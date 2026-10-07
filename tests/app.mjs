@@ -227,9 +227,10 @@ try {
   await evaluate('vector.app.view.ready');
 
   check('starts with an empty document', await evaluate(`[vector.doc().width, vector.doc().height, vector.doc().layers.length, vector.doc().layers[0].children.length]`), [800, 600, 1, 0]);
-  const gpu = await evaluate('!!navigator.gpu');
+  // navigator.gpu alone says little: Chrome on Linux has it and still gives no adapter.
+  const gpu = await evaluate('navigator.gpu?.requestAdapter().then((adapter) => !!adapter) ?? false');
   check('draws with WebGPU where there is one, else WebGL 2', await evaluate(`!vector.app.view.error && vector.app.view.renderer?.kind`), gpu ? 'webgpu' : 'webgl2');
-  if (!gpu) console.log('  No WebGPU in this Chrome: its renderer and the WGSL export are not tested.');
+  if (!gpu) console.log('  No WebGPU adapter in this Chrome: its renderer and the WGSL export are not tested.');
   check('the status bar says which', await evaluate(`document.querySelector('.status-renderer').textContent`), gpu ? 'WebGPU' : 'WebGL 2');
   const noGl = await evaluate(`(async () => {
     const getContext = HTMLCanvasElement.prototype.getContext;
