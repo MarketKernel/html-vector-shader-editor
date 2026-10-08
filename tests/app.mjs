@@ -85,10 +85,13 @@ const flags = [
   '--hide-scrollbars',
   '--use-angle=swiftshader',
   '--enable-unsafe-swiftshader',
-  // WebGPU in headless Chrome: on SwiftShader too, so the pictures stay the machine's own.
-  '--enable-unsafe-webgpu',
   '--allow-file-access-from-files',
 ];
+// WebGPU in headless Chrome: on SwiftShader too, so the pictures stay the machine's own.
+// Not on CI: a GitHub runner's Chrome on Linux gives an adapter now and then and loses its
+// device in the middle of a run, so there the page draws with WebGL 2, as it does in a
+// browser without WebGPU, and the WebGPU and WGSL checks are skipped.
+if (!process.env.CI) flags.push('--enable-unsafe-webgpu');
 if (process.platform === 'linux') flags.push('--no-sandbox');
 const chrome = spawn(CHROME, [...flags, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
 const wsUrl = await new Promise((resolve) => {
@@ -232,7 +235,7 @@ try {
   // navigator.gpu alone says little: Chrome on Linux has it and still gives no adapter.
   const gpu = await evaluate('navigator.gpu?.requestAdapter().then((adapter) => !!adapter) ?? false');
   check('draws with WebGPU where there is one, else WebGL 2', await evaluate(`!vector.app.view.error && vector.app.view.renderer?.kind`), gpu ? 'webgpu' : 'webgl2');
-  if (!gpu) console.log('  No WebGPU adapter in this Chrome: its renderer and the WGSL export are not tested.');
+  if (!gpu) console.log(`  No WebGPU ${process.env.CI ? 'on CI' : 'adapter in this Chrome'}: its renderer and the WGSL export are not tested.`);
   check('the status bar says which', await evaluate(`document.querySelector('.status-renderer').textContent`), gpu ? 'WebGPU' : 'WebGL 2');
   const noGl = await evaluate(`(async () => {
     const getContext = HTMLCanvasElement.prototype.getContext;

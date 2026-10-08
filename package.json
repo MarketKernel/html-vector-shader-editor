@@ -1,6 +1,6 @@
 {
   "name": "html-vector-editor",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "A vector editor drawn with WebGL 2 that exports the same picture as SVG, a GLSL shader and PNG — as one standalone HTML file",
   "license": "MIT",
