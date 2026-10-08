@@ -34,12 +34,17 @@ const { check, near, ok, done } = checker();
 }
 
 // Subpaths: Z closes, the closing point is not repeated, a segment after Z starts at the
-// start, repeated points are dropped.
+// start, repeated points are dropped, and so are points in the middle of a straight run.
 {
-  const subs = g.flatten([['M', 0, 0], ['L', 10, 0], ['L', 10, 10], ['L', 0, 0], ['Z'], ['L', 5, 5], ['L', 5, 5], ['L', 6, 6]], 1);
+  const subs = g.flatten([['M', 0, 0], ['L', 10, 0], ['L', 10, 10], ['L', 0, 0], ['Z'], ['L', 5, 5], ['L', 5, 5], ['L', 6, 4]], 1);
   check('two subpaths', subs.length, 2);
   check('closed, without the repeated first point', [subs[0].closed, subs[0].points.length], [true, 3]);
-  check('after Z, from the start; repeats dropped', subs[1].points, [{ x: 0, y: 0 }, { x: 5, y: 5 }, { x: 6, y: 6 }]);
+  check('after Z, from the start; repeats dropped', subs[1].points, [{ x: 0, y: 0 }, { x: 5, y: 5 }, { x: 6, y: 4 }]);
+  check('a straight run is one segment', g.flatten([['M', 0, 0], ['L', 5, 0], ['L', 10, 0], ['L', 10, 10]], 1)[0].points, [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }]);
+  // A quadratic with its control point on its start is a straight line, however finely it
+  // is flattened; a turn back is not a straight run.
+  check('a curve on its chord is one segment', g.flatten([['M', 0, 0], ['Q', 0, 0, 30, 40]], 0.01)[0].points, [{ x: 0, y: 0 }, { x: 30, y: 40 }]);
+  check('a turn back stays', g.flatten([['M', 0, 0], ['L', 10, 0], ['L', 5, 0]], 1)[0].points.length, 3);
 }
 
 // Stroke pieces of an open right angle with each join.
@@ -47,7 +52,7 @@ const { check, near, ok, done } = checker();
   const seg = [['M', 0, 0], ['L', 10, 0], ['L', 10, 10]];
   const stroke = (join, cap = 'butt') => g.pathGeometry({ segments: seg, stroke: { color: '#000000', opacity: 1, width: 2, cap, join } }, 0.1);
   const miter = stroke('miter');
-  check('two segment quads and a miter quad', [miter.quads.length / 8, miter.discs.length], [3, 0]);
+  check('two segment quads, a miter quad, and a disc over the seam where they meet', [miter.quads.length / 8, miter.discs], [3, [10, 0, 1, 0]]);
   check('the miter tip at the outer corner', miter.quads.slice(16, 24).slice(4, 6), [11, -1]);
   const bevel = stroke('bevel');
   check('a bevel is a triangle', bevel.quads.slice(16, 24), [10, 0, 10, -1, 11, 0, 11, 0]);

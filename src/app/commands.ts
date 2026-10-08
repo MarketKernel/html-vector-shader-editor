@@ -5,7 +5,7 @@
 import { app } from './app';
 import * as edit from './edit';
 import { exportGlslDialog, exportPngDialog, exportShadertoyDialog, exportSvgDialog, exportWgslDialog } from './export';
-import { documentDialog, loadFont, newDocument, open, save, saveAs } from './io';
+import { documentDialog, importSvgFile, loadFont, newDocument, open, save, saveAs } from './io';
 import { TOOLS } from './tools/index';
 import { showHtml } from './ui/dialog';
 import type { Backend } from './render/renderer';
@@ -32,6 +32,7 @@ const commands: Command[] = [
   { id: 'open', label: 'Открыть…', keys: ['Mod+O'], icon: 'open', run: open },
   { id: 'save', label: 'Сохранить', keys: ['Mod+S'], icon: 'save', run: save },
   { id: 'save-as', label: 'Сохранить как…', keys: ['Mod+Shift+S'], run: saveAs },
+  { id: 'import-svg', label: 'Импорт SVG…', icon: 'import', run: importSvgFile },
   { id: 'document', label: 'Размер документа…', run: documentDialog },
   { id: 'load-font', label: 'Загрузить шрифт…', icon: 'text', run: loadFont },
   { id: 'export-svg', label: 'Экспорт SVG…', keys: ['Mod+Shift+E'], icon: 'export', run: exportSvgDialog },
@@ -80,7 +81,7 @@ const commands: Command[] = [
 export const COMMANDS = new Map(commands.map((c) => [c.id, c]));
 
 export const MENUS: { id: string; label: string; items: string[] }[] = [
-  { id: 'file', label: 'Файл', items: ['new', 'open', '-', 'save', 'save-as', '-', 'export-svg', 'export-png', 'export-glsl', 'export-shadertoy', 'export-wgsl', '-', 'document', 'load-font'] },
+  { id: 'file', label: 'Файл', items: ['new', 'open', '-', 'save', 'save-as', '-', 'import-svg', '-', 'export-svg', 'export-png', 'export-glsl', 'export-shadertoy', 'export-wgsl', '-', 'document', 'load-font'] },
   { id: 'edit', label: 'Правка', items: ['undo', 'redo', '-', 'cut', 'copy', 'paste', 'duplicate', 'delete', '-', 'select-all', 'deselect', '-', 'group', 'ungroup', '-', 'bring-forward', 'send-backward', 'bring-front', 'send-back'] },
   { id: 'view', label: 'Вид', items: ['zoom-in', 'zoom-out', 'zoom-actual', 'zoom-fit', '-', 'panels', '-', 'renderer-webgpu', 'renderer-webgl2', '-', 'shortcuts', 'about'] },
   { id: 'layer', label: 'Слой', items: ['layer-new', 'layer-duplicate', 'layer-delete', '-', 'layer-up', 'layer-down', '-', 'move-to-layer'] },

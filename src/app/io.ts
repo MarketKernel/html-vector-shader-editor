@@ -1,17 +1,20 @@
 // Files: New, Open, Save, Save As in the editor's own .vector.json; where the File System
 // Access API exists, Save writes back to the file opened or saved last, elsewhere it
-// downloads. A dropped file opens. The document is also kept in IndexedDB as it changes,
-// and offered back at the next start.
+// downloads. Open also reads an SVG, as a new document; Import SVG and an SVG dropped on
+// the window place one into the document. A dropped .vector.json opens. The document is
+// also kept in IndexedDB as it changes, and offered back at the next start.
 
+import { pasteNodes } from '../core/actions';
 import { createDocument, locate, walkNodes } from '../core/document';
 import { FontError } from '../core/font';
 import { faceFromFile, isBuiltinFont } from '../core/fonts';
 import type { Op } from '../core/ops';
 import { addFonts, batch, nodeChange, updateDocument, updateNodes } from '../core/ops';
 import { FILE_EXTENSION, parseDocument, serialize } from '../core/serialize';
+import { documentAsGroup, importSvg, SvgImportError } from '../core/svg-import';
 import type { Document, FontFace, Text } from '../core/types';
 import { app } from './app';
-import { ask, form, inform, toast } from './ui/dialog';
+import { ask, esc, form, inform, showHtml, toast } from './ui/dialog';
 
 type Picker = {
   showOpenFilePicker?: (o: object) => Promise<FileSystemFileHandle[]>;
@@ -21,8 +24,11 @@ type Writable = { createWritable(): Promise<{ write(data: Blob | string): Promis
 
 const picker = window as unknown as Picker;
 const FILE_TYPES = [{ description: 'Векторный документ', accept: { 'application/json': ['.json'] } }];
+const OPEN_TYPES = [{ description: 'Векторный документ или SVG', accept: { 'application/json': ['.json'], 'image/svg+xml': ['.svg'] } }];
+const SVG_TYPES = [{ description: 'SVG', accept: { 'image/svg+xml': ['.svg'] } }];
+const SVG_FILE = /\.svg$/i;
 
-export const baseName = (name: string): string => name.replace(/\.vector\.json$/i, '').replace(/\.json$/i, '') || 'Без названия';
+export const baseName = (name: string): string => name.replace(/\.vector\.json$/i, '').replace(/\.(json|svg)$/i, '') || 'Без названия';
 const fileNameOf = (base: string) => `${base}${FILE_EXTENSION}`;
 
 const MAX_SIDE = 16384;
@@ -72,6 +78,7 @@ export async function documentDialog(): Promise<void> {
 }
 
 export function openText(text: string, name: string, handle: FileSystemFileHandle | null = null): boolean {
+  if (SVG_FILE.test(name)) return openSvg(text, name);
   let doc: Document;
   try {
     doc = parseDocument(text);
@@ -83,23 +90,98 @@ export function openText(text: string, name: string, handle: FileSystemFileHandl
   return true;
 }
 
-export async function open(): Promise<void> {
-  if (!(await confirmDiscard())) return;
+// ---- SVG
+
+// The import's result, or null when the file is not SVG (and that said).
+function readSvg(text: string, name: string): ReturnType<typeof importSvg> | null {
+  try {
+    return importSvg(text);
+  } catch (error) {
+    if (!(error instanceof SvgImportError)) throw error;
+    void inform('Не удалось импортировать SVG', `${name}: ${error.message}`);
+    return null;
+  }
+}
+
+function svgWarnings(name: string, warnings: string[]): void {
+  if (!warnings.length) return;
+  showHtml(
+    'Импорт SVG',
+    `<p class="dialog-text">«${esc(name)}» прочитан, но не всё в нём есть в редакторе:</p><ul class="export-warnings">${warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>`,
+  );
+}
+
+// An SVG as a new document. It is not this editor's file, so Save asks where to write the
+// .vector.json rather than overwriting the SVG.
+export function openSvg(text: string, name: string): boolean {
+  const result = readSvg(text, name);
+  if (!result) return false;
+  app.load(result.doc, baseName(name), null);
+  app.history.markUnsaved();
+  app.emit('change');
+  svgWarnings(name, result.warnings);
+  return true;
+}
+
+// An SVG into the entered group or the active layer, as one group (or one shape) where the
+// file draws it, selected; one step to undo.
+export function placeSvg(text: string, name: string): boolean {
+  const result = readSvg(text, name);
+  if (!result) return false;
+  const { group, warnings } = documentAsGroup(result.doc, baseName(name));
+  const node = group.children.length === 1 ? group.children[0]! : group;
+  if (!group.children.length) {
+    svgWarnings(name, result.warnings);
+    return false;
+  }
+  const e = pasteNodes(app.doc, [node], app.insertTarget().parentId);
+  if (!e) return false;
+  e.op.label = 'Импорт SVG';
+  app.apply(e.op, { selection: e.selection });
+  svgWarnings(name, [...result.warnings, ...warnings]);
+  return true;
+}
+
+export async function importSvgFile(): Promise<void> {
   if (picker.showOpenFilePicker) {
     let handle: FileSystemFileHandle | undefined;
     try {
-      [handle] = await picker.showOpenFilePicker({ types: FILE_TYPES, excludeAcceptAllOption: false });
+      [handle] = await picker.showOpenFilePicker({ types: SVG_TYPES });
     } catch {
       return; // Cancelled.
     }
     if (!handle) return;
     const file = await handle.getFile();
-    openText(await file.text(), file.name, handle);
+    placeSvg(await file.text(), file.name);
     return;
   }
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = '.json,application/json';
+  input.accept = '.svg,image/svg+xml';
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0];
+    if (file) placeSvg(await file.text(), file.name);
+  });
+  input.click();
+}
+
+export async function open(): Promise<void> {
+  if (!(await confirmDiscard())) return;
+  if (picker.showOpenFilePicker) {
+    let handle: FileSystemFileHandle | undefined;
+    try {
+      [handle] = await picker.showOpenFilePicker({ types: OPEN_TYPES, excludeAcceptAllOption: false });
+    } catch {
+      return; // Cancelled.
+    }
+    if (!handle) return;
+    const file = await handle.getFile();
+    openText(await file.text(), file.name, SVG_FILE.test(file.name) ? null : handle);
+    return;
+  }
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json,.svg,image/svg+xml';
   input.addEventListener('change', async () => {
     const file = input.files?.[0];
     if (file) openText(await file.text(), file.name);
@@ -115,6 +197,10 @@ export async function openDropped(files: File[]): Promise<void> {
     if (face) useFont(face);
   }
   if (fonts.length) return;
+  // SVGs dropped are placed into the document, as by File → Import SVG.
+  const svgs = files.filter((f) => SVG_FILE.test(f.name) || f.type === 'image/svg+xml');
+  for (const f of svgs) placeSvg(await f.text(), f.name);
+  if (svgs.length) return;
   const file = files.find((f) => /\.json$/i.test(f.name)) ?? files[0];
   if (!file) return;
   if (!(await confirmDiscard())) return;

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- An SVG as other editors write them, for the import test: style sheets and classes,
+     arcs and smooth curves, <use> and <symbol>, a nested <svg>, units, colour syntaxes,
+     layers with opacity and a blend mode. The import must draw it as Chrome does. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="320" height="240" viewBox="-20 -10 320 240">
+  <style>
+    .panel { fill: #4f8ef7; stroke: #1d2433; stroke-width: 4px }
+    .warm { fill: rgb(245 185 66) }
+    #layer-shapes > .soft { fill-opacity: 60% }
+    path.outline { fill: none; stroke: darkslateblue; stroke-width: 6; stroke-linejoin: round; stroke-linecap: round }
+  </style>
+  <defs>
+    <path id="tick" d="M0 0l8 8 16-16" fill="none" stroke="seagreen" stroke-width="5" stroke-linecap="square"/>
+    <symbol id="badge" viewBox="0 0 10 10">
+      <circle cx="5" cy="5" r="4.5" fill="currentColor"/>
+      <rect x="3" y="3" width="4" height="4" fill="white"/>
+    </symbol>
+  </defs>
+  <rect x="-20" y="-10" width="320" height="240" fill="#fbfaf7"/>
+  <g id="layer-shapes" data-name="Shapes">
+    <rect class="panel" x="0" y="0" width="120" height="80" rx="12"/>
+    <rect class="warm soft" x="140" y="0" width="100" height="60" rx="20" ry="10" stroke="#333" stroke-width="2" stroke-miterlimit="10"/>
+    <circle cx="40" cy="130" r="30" fill="hsl(150, 55%, 45%)" stroke="#0b5d3b" stroke-width="3"/>
+    <ellipse cx="130" cy="130" rx="35" ry="20" transform="rotate(-20 130 130) skewX(10)" fill="rgba(229, 72, 77, 0.85)"/>
+    <path class="outline" d="M190 90 a30 30 0 1 1 60 0 s-10 40-30 40 T190 160 h40 v20 H180 Z"/>
+    <polygon points="0,180 60,180 60,230 0,230 30,170" fill="#8e4ec6" fill-rule="evenodd" stroke="#2b1640" stroke-width="2" stroke-linejoin="bevel"/>
+    <polyline points="80,225 110,190 140,225 170,190" fill="none" stroke="tomato" stroke-width="5" stroke-linejoin="miter"/>
+    <line x1="-10" y1="225" x2="290" y2="225" stroke="#6e56cf" stroke-width="3" stroke-linecap="round"/>
+  </g>
+  <g id="layer-marks" data-name="Marks" opacity="0.9" style="mix-blend-mode: multiply">
+    <rect x="80" y="40" width="90" height="70" fill="orange"/>
+    <g transform="translate(180 175) scale(1.5)" opacity="0.7">
+      <use xlink:href="#tick"/>
+      <use href="#tick" x="30" stroke="crimson"/>
+    </g>
+    <use href="#badge" x="250" y="150" width="40" height="40" color="#2050ff"/>
+    <svg x="250" y="0" width="40" height="40" viewBox="0 0 20 20" overflow="visible">
+      <path d="M10 1L19 19H1z" fill="gold" stroke="black" stroke-width="1" stroke-linejoin="round"/>
+    </svg>
+  </g>
+</svg>

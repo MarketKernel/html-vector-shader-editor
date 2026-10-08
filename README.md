@@ -39,8 +39,8 @@ install it as an app (the install button in the address bar; Share → Add to Ho
 an iPhone). It works offline from then on, and updates itself on the next start after a new
 deploy.
 
-Drop a `.vector.json` file on the window to open it, or a
-`.ttf` / `.otf` font to use it.
+Drop a `.vector.json` file on the window to open it, an `.svg` to place it into the
+document, or a `.ttf` / `.otf` font to use it.
 
 The interface is in Russian for now.
 
@@ -86,6 +86,8 @@ V, D), Delete, Select all, Group / Ungroup (⌘G, ⇧⌘G), Bring forward / Send
 
 **Files** — New, Open, Save (⌘S), Save as, in the editor's own `.vector.json`. Where the
 File System Access API exists, Save writes back to the same file; elsewhere it downloads.
+Open also reads an SVG as a new document (Save then asks where to write its
+`.vector.json`); File → Import SVG places one into the document — see below.
 The document is kept in IndexedDB as it changes and offered back at the next start if it
 was never saved; closing the page with unsaved changes asks first.
 
@@ -118,6 +120,32 @@ path. A text's (x, y) is the alignment point on its first line's baseline, as fo
 document's `fonts`. Opacity of a layer or a group applies to the result of compositing
 its children. Blend formulas are the W3C Compositing and Blending ones, the same in the
 renderers, the SVG (`mix-blend-mode`) and the shaders.
+
+## SVG import
+
+An SVG becomes the model, drawn as a browser draws the file wherever the model can say
+it: rectangles, circles, ellipses, lines, polylines, polygons and paths (every command of
+`d`; arcs become cubic curves within a few millionths of their radius), groups, `<a>`,
+`<switch>`, nested `<svg>`, `<use>` of shapes, groups and `<symbol>`s; transforms,
+opacity, fill and stroke with their opacity, width, caps, joins and fill rule; colours as
+CSS writes them (names, `#rgb(a)`, `rgb()`, `hsl()`, `currentColor`); lengths in any unit.
+Styles cascade as in a browser: presentation attributes, `<style>` sheets with tag, class
+and id selectors joined by spaces or `>`, `style=""`, `!important`, inheritance.
+
+Open makes the page the viewBox, so the file's coordinates stay as they were. Top-level
+`<g>` elements are the layers when there is nothing else at the top — Inkscape's and
+Illustrator's layers and this editor's own: name, visibility, lock, opacity and blend
+mode — and a rectangle filling the page under them is the background. An SVG exported by
+the editor reads back to the same document, but its texts stay outlines. Import SVG puts
+the file into the active layer (or the entered group) as a group named after it, where
+the file draws it, selected; its layers become groups.
+
+A text is set in the built-in Inter, its lines from `<tspan>`s with their own y (as
+Inkscape writes them). Whatever the model has no place for is listed when the file opens,
+counted, never dropped silently: gradients (drawn in the average colour of their stops),
+dashes, clipping, masks, filters, images, markers, another font or weight, per-letter
+positions, a miter limit other than 4 where a corner is sharp enough for it to matter,
+blend modes below a layer.
 
 ## Texts in the exports
 
@@ -193,9 +221,12 @@ colours, order and blending may not):
 | WebGPU against WebGL 2 | 0.1 % of pixels | 0 (largest difference 0 / 255) |
 | Texts: PNG against SVG | 1 % of pixels | 0.77 % (0.36 % at 2×) |
 | Texts: PNG against GLSL | 0.1 % of pixels | 0 (largest difference 8 / 255) |
+| Imported SVG: PNG against the file (drawn by Chrome) | 0.5 % of pixels | 0.26 % |
 
 Small glyphs are mostly edge, where Chrome's area coverage and the shaders' one-pixel
 distance ramp part most (corners, thin stems), hence the wider allowance for texts at 1×.
+The imported file is `tests/fixtures/import.svg`, written as other editors write SVG:
+style sheets, arcs and smooth curves, `<use>`, `<symbol>`, a nested `<svg>`, layers.
 
 ## Build and test
 
@@ -211,7 +242,8 @@ npm run shots          # screenshots into shots/
 
 Unit tests run in Node with no framework (`tools/load.mjs` compiles the `src/` modules
 they need): matrices, the model and its undo / redo, Bézier flattening and stroke
-pieces, the file format both ways, the SVG export as exact text, the GLSL and WGSL
+pieces, the file format both ways, the SVG export as exact text, the SVG import (path
+data, transforms, colours, the cascade, layers, texts, warnings), the GLSL and WGSL
 exports' structure and constants, reading fonts (against fontTools' outlines and
 HarfBuzz's kerned advances), setting texts. The browser tests drive the built page in
 headless Chrome over the DevTools protocol with Node's own WebSocket
@@ -263,6 +295,7 @@ src/core/           no DOM; what the unit tests cover
   sdf.ts            the SDF library in GLSL and in WGSL, shared by renderers and exports
   shader.ts         what the shader exports share; glsl.ts, wgsl.ts spell it out
   svg.ts            the SVG export
+  svg-import.ts     the SVG import; xml.ts, the XML it reads
   serialize.ts      the .vector.json format, its checks and migrations
 src/app/
   app.ts            state: document, history, selection, tool, style, file

@@ -1,6 +1,6 @@
 {
   "name": "html-vector-editor",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "private": true,
   "description": "A vector editor drawn with WebGL 2 that exports the same picture as SVG, a GLSL shader and PNG — as one standalone HTML file",
   "license": "MIT",
@@ -12,7 +12,7 @@
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "test": "node tests/matrix.mjs && node tests/model.mjs && node tests/geometry.mjs && node tests/serialize.mjs && node tests/svg.mjs && node tests/glsl.mjs && node tests/font.mjs && node tests/text.mjs",
+    "test": "node tests/matrix.mjs && node tests/model.mjs && node tests/geometry.mjs && node tests/serialize.mjs && node tests/svg.mjs && node tests/svg-import.mjs && node tests/glsl.mjs && node tests/font.mjs && node tests/text.mjs",
     "test:browser": "node --experimental-websocket tests/app.mjs",
     "shots": "node build.mjs && mkdir -p shots && node --experimental-websocket tests/app.mjs --shots shots",
     "check": "npm run typecheck && npm test && npm run build && npm run test:browser"

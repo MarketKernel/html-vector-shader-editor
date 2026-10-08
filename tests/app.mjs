@@ -4,8 +4,9 @@
  * created, renamed, reordered, hidden, faded and blended; a file saved and opened again;
  * texts typed, edited, restyled and set in a font dropped on the window; and the three
  * renderings compared — the PNG export against the SVG export drawn by the
- * browser, and against the exported GLSL shader compiled on its own; then the PWA of
- * build/pages/ over HTTP, offline from its service worker.
+ * browser, and against the exported GLSL shader compiled on its own; an SVG imported and
+ * drawn as the browser draws the file; then the PWA of build/pages/ over HTTP, offline
+ * from its service worker.
  *
  * Needs `npm run build` first and a local Chrome (or `CHROME=/path/to/chrome`). No
  * dependencies beyond Node: the DevTools protocol is spoken over the built-in WebSocket.
@@ -21,7 +22,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, extname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { checker, root } from '../tools/load.mjs';
+import { checker, load, root } from '../tools/load.mjs';
 
 const APP = join(root, 'build', 'vector.html');
 const PAGES = join(root, 'build', 'pages');
@@ -603,6 +604,51 @@ try {
     await compare("vector.images.png(1, 'webgpu')", "vector.images.png(1, 'webgl2')", 'transparent: WebGPU against WebGL 2', GLSL_SHARE);
     await compare('vector.images.png(1)', 'vector.images.wgsl()', 'transparent: PNG against WGSL', GLSL_SHARE);
   }
+
+  // ---- SVG import: a file as other editors write them, drawn as Chrome draws the file
+  const svgFile = await readFile(join(root, 'tests/fixtures/import.svg'), 'utf8');
+  check('opens an SVG', await evaluate(`vector.open(${JSON.stringify(svgFile)}, 'import.svg')`), true);
+  check('with nothing to warn about', await evaluate(`!document.querySelector('dialog[open]')`), true);
+  check(
+    'its layers and background; Save will not write over the SVG',
+    await evaluate(`[vector.doc().layers.map((l) => [l.name, l.opacity, l.blend]), vector.doc().background, vector.app.fileHandle, vector.app.fileName]`),
+    [[['Shapes', 1, 'normal'], ['Marks', 0.9, 'multiply']], '#fbfaf7', null, 'import'],
+  );
+  await compare('vector.images.png(1)', `vector.images.svg(${JSON.stringify(svgFile)})`, 'imported SVG: PNG against the file', SVG_SHARE);
+  await compare('vector.images.png(2)', `vector.images.svg(${JSON.stringify(svgFile)}, 2)`, 'imported SVG ×2: PNG against the file ×2', SVG_SHARE);
+  await compare('vector.images.png(1)', 'vector.images.svg()', 'imported SVG: PNG against its SVG export', SVG_SHARE);
+  await compare('vector.images.png(1)', 'vector.images.glsl()', 'imported SVG: PNG against GLSL', GLSL_SHARE);
+  if (SHOTS) {
+    await evaluate('vector.app.view.render()');
+    await shot('import-svg');
+  }
+  // Every named colour read as Chrome reads it.
+  const { COLOR_NAMES, parseCssColor } = await load('core/color.ts');
+  const chromeColors = await evaluate(`(() => {
+    const ctx = document.createElement('canvas').getContext('2d');
+    return ${JSON.stringify(COLOR_NAMES)}.map((name) => { ctx.fillStyle = '#000000'; ctx.fillStyle = name; return ctx.fillStyle; });
+  })()`);
+  check('148 colour names, as Chrome has them', COLOR_NAMES.map((n) => parseCssColor(n).hex), chromeColors);
+  // An SVG dropped on the window goes into the document, selected, as one step.
+  await evaluate(`vector.open(JSON.stringify({ version: 2, width: 300, height: 200, background: null, fonts: [], layers: [{ id: 'one', name: 'One', children: [] }] }))`);
+  const mark = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 50 50"><rect width="10" height="10"/><circle cx="30" cy="30" r="5" fill="red" stroke="black" stroke-dasharray="2 2"/></svg>';
+  await evaluate(`(() => {
+    const dt = new DataTransfer();
+    dt.items.add(new File([${JSON.stringify(mark)}], 'mark.svg', { type: 'image/svg+xml' }));
+    window.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+  })()`);
+  await until('vector.doc().layers[0].children.length > 0');
+  check(
+    'an SVG dropped: placed as a group named after the file, and selected',
+    await evaluate(`(() => { const g = vector.doc().layers[0].children[0]; return [g.type, g.name, g.children.map((n) => n.type), vector.app.selection[0] === g.id]; })()`),
+    ['group', 'mark', ['rect', 'ellipse'], true],
+  );
+  await until(`!!document.querySelector('dialog[open]')`);
+  ok('what it could not carry is said', await evaluate(`document.querySelector('dialog[open]').textContent.includes('stroke-dasharray')`));
+  await shot('import-warnings');
+  await evaluate(`document.querySelector('dialog[open]').close()`);
+  await press('z', MOD);
+  check('one step to undo', await evaluate('vector.doc().layers[0].children.length'), 0);
 
   // ---- 5. Hundreds of objects: drawing and dragging stay quick
   await evaluate(`(() => {

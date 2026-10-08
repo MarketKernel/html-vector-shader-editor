@@ -14,7 +14,7 @@ import { exportWgsl } from '../core/wgsl';
 import { app } from './app';
 import { COMMANDS, installKeyboard, runCommand } from './commands';
 import { renderPixels } from './export';
-import { installAutosave, offerRestore, openDropped, openText } from './io';
+import { installAutosave, offerRestore, openDropped, openText, placeSvg } from './io';
 import { drawFragment, readFragment } from './render/fragment';
 import { runWgsl } from './render/gpu';
 import type { Backend } from './render/renderer';
@@ -158,6 +158,8 @@ Object.assign(window, {
     json: () => serialize(app.doc),
     canonical: () => canonical(app.doc),
     open: (text: string, name = 'test.vector.json') => openText(text, name),
+    // An SVG into the document, as File → Import SVG places it.
+    place: (text: string, name = 'test.svg') => placeSvg(text, name),
     parse: parseDocument,
     exportSvg: () => exportSvg(app.doc),
     exportGlsl: () => exportGlsl(app.doc, app.fileName),

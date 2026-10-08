@@ -131,6 +131,22 @@ function tidy(s: Subpath): Subpath {
       corners[0] = true;
     }
   }
+  // A point in the middle of a straight run is no corner: one piece instead of two, and no
+  // seam where two stroke pieces would meet edge to edge (a curve whose control points lie
+  // on its chord — SVG's S and T after a line make them — flattens to many such points).
+  for (let i = points.length - 2; i >= 1; i--) {
+    const a = points[i - 1]!;
+    const b = points[i]!;
+    const c = points[i + 1]!;
+    const ux = b.x - a.x;
+    const uy = b.y - a.y;
+    const vx = c.x - b.x;
+    const vy = c.y - b.y;
+    if (Math.abs(ux * vy - uy * vx) <= 1e-9 * Math.hypot(ux, uy) * Math.hypot(vx, vy) && ux * vx + uy * vy > 0) {
+      points.splice(i, 1);
+      corners.splice(i, 1);
+    }
+  }
   return { points, corners, closed: s.closed };
 }
 
@@ -238,12 +254,14 @@ function strokePieces(subpaths: Subpath[], hw: number, cap: LineCap, join: LineJ
     if (n < 2) continue;
     const segCount = s.closed ? n : n - 1;
     const dirs: Point[] = [];
+    const lens: number[] = [];
     for (let i = 0; i < segCount; i++) {
       const a = pts[i]!;
       const b = pts[(i + 1) % n]!;
       const len = Math.hypot(b.x - a.x, b.y - a.y);
       const d = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
       dirs.push(d);
+      lens.push(len);
       const nx = -d.y * hw;
       const ny = d.x * hw;
       const extA = !s.closed && i === 0 && cap === 'square' ? hw : 0;
@@ -258,9 +276,9 @@ function strokePieces(subpaths: Subpath[], hw: number, cap: LineCap, join: LineJ
     const last = s.closed ? n - 1 : n - 2;
     for (let i = first; i <= last; i++) {
       const v = pts[i]!;
-      const d0 = dirs[(i - 1 + segCount) % segCount]!;
-      const d1 = dirs[i % segCount]!;
-      joinPiece(v, d0, d1, hw, s.corners[i] ? join : 'round', quads, discs);
+      const before = (i - 1 + segCount) % segCount;
+      const after = i % segCount;
+      joinPiece(v, dirs[before]!, dirs[after]!, Math.min(lens[before]!, lens[after]!), hw, s.corners[i] ? join : 'round', quads, discs);
     }
     if (!s.closed && cap === 'round') {
       discs.push(pts[0]!.x, pts[0]!.y, hw, 0);
@@ -269,7 +287,8 @@ function strokePieces(subpaths: Subpath[], hw: number, cap: LineCap, join: LineJ
   }
 }
 
-function joinPiece(v: Point, d0: Point, d1: Point, hw: number, join: LineJoin, quads: number[], discs: number[]): void {
+// `room`: the shorter of the two segments, how far a piece may reach along them.
+function joinPiece(v: Point, d0: Point, d1: Point, room: number, hw: number, join: LineJoin, quads: number[], discs: number[]): void {
   const cross = d0.x * d1.y - d0.y * d1.x;
   const dot = d0.x * d1.x + d0.y * d1.y;
   if (Math.abs(cross) < 1e-9 && dot > 0) return;
@@ -291,7 +310,15 @@ function joinPiece(v: Point, d0: Point, d1: Point, hw: number, join: LineJoin, q
   // The miter's length over the stroke width is 1 / sin(θ/2) = 2 / |n0 + n1|.
   if (join === 'miter' && mm > 1e-12 && 2 / Math.sqrt(mm) <= SVG_MITER_LIMIT) {
     const k = (2 * hw) / mm;
-    quads.push(v.x, v.y, ax, ay, v.x + mx * k, v.y + my * k, bx, by);
+    // The miter meets the segments' rectangles edge to edge, and along an edge shared so
+    // the union of distances is half covered: a seam across the stroke, plain to see
+    // where the turn is slight. So its outer corners reach back along the outer edges, by
+    // as much as the segments allow, and a disc covers v: both lie within the rectangles
+    // and the miter (the disc is inscribed in it), so the outline is the same, and the
+    // shared edges are inside.
+    const e = Math.min(hw, room);
+    quads.push(v.x, v.y, ax - d0.x * e, ay - d0.y * e, v.x + mx * k, v.y + my * k, bx + d1.x * e, by + d1.y * e);
+    discs.push(v.x, v.y, e, 0);
   } else {
     // A triangle, as a quad with its last corner repeated.
     quads.push(v.x, v.y, ax, ay, bx, by, bx, by);
